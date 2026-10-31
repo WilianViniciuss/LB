@@ -1,0 +1,14 @@
+{
+  "chrome": "C:/Program Files/Google/Chrome/Application/chrome.exe",
+  "porta": 3737,
+  "urlViaImob": "https://viavirtual2.viaimob.com.br:6580/",
+  "viewportViaImob": { "width": 940, "height": 588 },
+  "concorrenciaExtracao": 3,
+  "esperaMs": 1500,
+  "mapaOcorrencias": [
+    { "regex": "^fundo", "nome": "Fundo de Reserva DP-F" },
+    { "regex": "^cham", "nome": "Chamada Extra DP - F" },
+    { "regex": "multa", "nome": null },
+    { "regex": "mudan", "nome": null }
+  ]
+}
