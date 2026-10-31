@@ -48,18 +48,80 @@ const mudou = (persistir = true) => {
   estado.atualizadoEm = new Date().toISOString();
   if (!timerSalvar) timerSalvar = setTimeout(() => { try { salvarAgora(); } catch (e) { console.error('Falha ao salvar:', e.message); } }, 400);
 };
-for (const sinal of ['SIGINT', 'SIGTERM']) process.on(sinal, () => { try { if (timerSalvar) salvarAgora(); } finally { process.exit(0); } });
+for (const sinal of ['SIGINT', 'SIGTERM']) process.on(sinal, async () => {
+  try { if (timerSalvar) salvarAgora(); await salvarSessao(); } finally { process.exit(0); }
+});
 
 // ---------- Via Imob ----------
-let viaCtx = null;
+// O perfil persistente (perfil-via/) guarda cookies duráveis e localStorage. Cookies de sessão e
+// sessionStorage o Chrome descarta ao fechar; por isso são salvos à parte em perfil-via/sessao.json
+// (arquivo local, permissão 600, ignorado pelo git) e restaurados ao abrir — o login continua valendo.
+const dirPerfil = path.join(raiz, 'perfil-via');
+const arqSessao = path.join(dirPerfil, 'sessao.json');
+let viaCtx = null, timerSessao = null;
+
+async function salvarSessao(ctx = viaCtx) {
+  if (!ctx) return;
+  try {
+    const cookies = await ctx.cookies();
+    // Mantém o sessionStorage salvo antes (no fechamento as páginas já não respondem).
+    let storage = {};
+    try { storage = JSON.parse(fs.readFileSync(arqSessao, 'utf8')).storage || {}; } catch {}
+    for (const p of ctx.pages()) {
+      try {
+        const r = await p.evaluate(() => ({ o: location.origin, d: JSON.stringify(Object.entries(sessionStorage)) }));
+        if (/^https?:/.test(r.o) && r.d !== '[]') storage[r.o] = r.d;
+      } catch {}
+    }
+    if (!cookies.length && !Object.keys(storage).length) return;
+    const tmp = arqSessao + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({ salvoEm: new Date().toISOString(), cookies, storage }), { mode: 0o600 });
+    fs.renameSync(tmp, arqSessao);
+  } catch {}
+}
+
+async function restaurarSessao(ctx) {
+  let s;
+  try { s = JSON.parse(fs.readFileSync(arqSessao, 'utf8')); } catch { return; }
+  const agora = Date.now() / 1000;
+  const cookies = (s.cookies || []).filter(c => c.expires === -1 || c.expires > agora);
+  // Só adiciona cookies que o perfil ainda não tem (não sobrescreve um login mais novo).
+  const atuais = new Set((await ctx.cookies()).map(c => `${c.name}|${c.domain}|${c.path}`));
+  const faltando = cookies.filter(c => !atuais.has(`${c.name}|${c.domain}|${c.path}`));
+  if (faltando.length) await ctx.addCookies(faltando).catch(() => {});
+  // sessionStorage: restaurado só no primeiro minuto após abrir (evita reviver sessão após logout).
+  if (s.storage && Object.keys(s.storage).length) {
+    await ctx.addInitScript(({ storage, ate }) => {
+      try {
+        const d = storage[location.origin];
+        if (d && Date.now() < ate && sessionStorage.length === 0) for (const [k, v] of JSON.parse(d)) sessionStorage.setItem(k, v);
+      } catch {}
+    }, { storage: s.storage, ate: Date.now() + 60000 });
+  }
+}
 
 async function abrirVia() {
-  if (viaCtx) { try { await viaCtx.pages()[0]?.bringToFront(); estado.via.aberto = true; mudou(false); return; } catch { viaCtx = null; } }
-  viaCtx = await chromium.launchPersistentContext(path.join(raiz, 'perfil-via'), {
+  if (viaCtx) {
+    try { await viaCtx.pages()[0]?.bringToFront(); estado.via.aberto = true; mudou(false); return; } catch { viaCtx = null; }
+  }
+  const ctx = await chromium.launchPersistentContext(dirPerfil, {
     executablePath: cfg.chrome, headless: false, ignoreHTTPSErrors: true, viewport: cfg.viewportViaImob || null
   });
-  viaCtx.on('close', () => { viaCtx = null; estado.via.aberto = false; mudou(false); });
-  const p = viaCtx.pages()[0] || await viaCtx.newPage();
+  viaCtx = ctx;
+  await restaurarSessao(ctx);
+  // Salva a sessão a cada carregamento de página e periodicamente (cobre o fechamento da janela).
+  let tSalvar = null;
+  const agendarSalvar = () => { clearTimeout(tSalvar); tSalvar = setTimeout(() => salvarSessao(ctx), 1500); };
+  const observar = p => { p.on('load', agendarSalvar); p.on('close', () => salvarSessao(ctx)); };
+  ctx.pages().forEach(observar);
+  ctx.on('page', observar);
+  clearInterval(timerSessao);
+  timerSessao = setInterval(() => salvarSessao(ctx), 10000);
+  ctx.on('close', () => {
+    clearInterval(timerSessao); clearTimeout(tSalvar);
+    if (viaCtx === ctx) { viaCtx = null; estado.via.aberto = false; mudou(false); }
+  });
+  const p = ctx.pages()[0] || await ctx.newPage();
   await p.goto(cfg.urlViaImob).catch(() => {});
   estado.via.aberto = true; mudou(false);
 }
