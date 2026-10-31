@@ -1,6 +1,8 @@
 {
   "chrome": "C:/Program Files/Google/Chrome/Application/chrome.exe",
   "porta": 3737,
+  "abrirComoApp": true,
+  "janelaApp": { "width": 1440, "height": 900 },
   "urlViaImob": "https://viavirtual2.viaimob.com.br:6580/",
   "viewportViaImob": { "width": 940, "height": 588 },
   "concorrenciaExtracao": 3,

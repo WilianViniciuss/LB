@@ -48,9 +48,13 @@ const mudou = (persistir = true) => {
   estado.atualizadoEm = new Date().toISOString();
   if (!timerSalvar) timerSalvar = setTimeout(() => { try { salvarAgora(); } catch (e) { console.error('Falha ao salvar:', e.message); } }, 400);
 };
-for (const sinal of ['SIGINT', 'SIGTERM']) process.on(sinal, async () => {
-  try { if (timerSalvar) salvarAgora(); await salvarSessao(); } finally { process.exit(0); }
-});
+// Encerramento limpo: grava a lista, salva o login do Via Imob e fecha o navegador.
+let encerrando = false;
+async function encerrar() {
+  if (encerrando) return; encerrando = true;
+  try { if (timerSalvar) salvarAgora(); await salvarSessao(); await viaCtx?.close().catch(() => {}); } finally { process.exit(0); }
+}
+for (const sinal of ['SIGINT', 'SIGTERM']) process.on(sinal, encerrar);
 
 // ---------- Via Imob ----------
 // O perfil persistente (perfil-via/) guarda cookies duráveis e localStorage. Cookies de sessão e
@@ -188,13 +192,14 @@ const SEGURANCA = {
 };
 
 // Arquivos estáticos carregados em memória na inicialização (whitelist — sem path traversal).
-const TIPOS = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
+const TIPOS = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
 const estaticos = new Map();
-for (const nome of ['index.html', 'app.css', 'app.js', 'logo.svg']) {
-  let conteudo = fs.readFileSync(path.join(raiz, 'public', nome), 'utf8');
-  if (nome === 'index.html') conteudo = conteudo.replace('__TOKEN__', TOKEN);
-  estaticos.set(nome === 'index.html' ? '/' : '/' + nome, { tipo: TIPOS[path.extname(nome)], corpo: Buffer.from(conteudo) });
+for (const nome of ['index.html', 'app.css', 'app.js', 'logo.svg', 'icone.ico']) {
+  let corpo = fs.readFileSync(path.join(raiz, 'public', nome));
+  if (nome === 'index.html') corpo = Buffer.from(corpo.toString('utf8').replace('__TOKEN__', TOKEN));
+  estaticos.set(nome === 'index.html' ? '/' : '/' + nome, { tipo: TIPOS[path.extname(nome)], corpo });
 }
+estaticos.set('/favicon.ico', estaticos.get('/icone.ico'));
 
 const responder = (res, code, corpo, tipo, extra = {}) => {
   res.writeHead(code, { ...SEGURANCA, 'Cache-Control': 'no-store', ...(tipo && { 'Content-Type': tipo }), ...extra });
@@ -261,7 +266,6 @@ const servidor = http.createServer(async (req, res) => {
     if (req.method === 'GET' || req.method === 'HEAD') {
       const arq = estaticos.get(url.pathname);
       if (arq) return responder(res, 200, req.method === 'HEAD' ? undefined : arq.corpo, arq.tipo);
-      if (url.pathname === '/favicon.ico') return responder(res, 204);
       if (url.pathname === '/api/estado') {
         if (!tokenOk(req)) return json(res, { erro: 'Não autorizado' }, 403);
         // Polling barato: sem mudança desde a versão do cliente → 204 sem corpo.
@@ -289,12 +293,37 @@ const servidor = http.createServer(async (req, res) => {
 });
 servidor.headersTimeout = 15000;
 servidor.requestTimeout = 120000;
-servidor.listen(porta, '127.0.0.1', () => {
-  const url = `http://localhost:${porta}`;
-  console.log('Interface em ' + url);
+// ---------- Janela do app ----------
+// Abre a interface numa janela própria do Chrome (modo app: sem abas nem barra de endereço),
+// com perfil separado. Fechar a janela encerra o servidor.
+function abrirJanela() {
+  const url = `http://localhost:${porta}/`;
   if (process.env.LB_SEM_NAVEGADOR) return;
-  // spawn com argumentos separados (sem interpolação em shell).
-  const [cmd, args] = process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', url]]
-    : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
-  try { spawn(cmd, args, { stdio: 'ignore', detached: true, windowsVerbatimArguments: process.platform === 'win32' }).on('error', () => {}).unref(); } catch {}
+  if (cfg.abrirComoApp === false) {
+    const [cmd, args] = process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', url]]
+      : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+    try { spawn(cmd, args, { stdio: 'ignore', detached: true, windowsVerbatimArguments: process.platform === 'win32' }).on('error', () => {}).unref(); } catch {}
+    return;
+  }
+  const { width = 1440, height = 900 } = cfg.janelaApp || {};
+  const inicio = Date.now();
+  const filho = spawn(cfg.chrome, [
+    `--app=${url}`, `--user-data-dir=${path.join(raiz, 'perfil-app')}`, `--window-size=${width | 0},${height | 0}`,
+    '--no-first-run', '--no-default-browser-check', '--disable-extensions'
+  ], { stdio: 'ignore' });
+  filho.on('error', e => console.error('Não foi possível abrir a janela do app:', e.message));
+  // Se a janela já existia (outra instância), o processo sai na hora: não encerra o servidor.
+  filho.on('exit', () => { if (Date.now() - inicio > 5000 && servidorPrincipal) encerrar(); });
+}
+
+let servidorPrincipal = false;
+servidor.on('error', e => {
+  // Já há um servidor rodando nesta porta: só abre a janela dele e sai.
+  if (e.code === 'EADDRINUSE') { console.log('App já está aberto; abrindo janela.'); abrirJanela(); setTimeout(() => process.exit(0), 3000); }
+  else { console.error(e); process.exit(1); }
+});
+servidor.listen(porta, '127.0.0.1', () => {
+  servidorPrincipal = true;
+  console.log(`Interface em http://localhost:${porta}`);
+  abrirJanela();
 });
