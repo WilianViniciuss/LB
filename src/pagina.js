@@ -66,7 +66,7 @@
   const valorLinha     = linhaDigitavel ? parseInt(linhaDigitavel.split(' ').pop().slice(4), 10) / 100 : 0;
   const ok = [somaItens, totalRecibo, valorDocumento, valorLinha].every(v => c(v) === c(somaCalc));
 
-  return { condominio: linhas[0], unidade: linhas.at(-1), vencimento, codIdentificador, chamadaExtra, fundos, multa, mudanca, outros,
+  return { itensRecibo: itens, condominio: linhas[0], unidade: linhas.at(-1), vencimento, codIdentificador, chamadaExtra, fundos, multa, mudanca, outros,
            desconto: desconto.length ? desconto : null, linhaDigitavel,
            conferencia: { somaCalc: brl(somaCalc), totalRecibo: brl(totalRecibo), valorDocumento: brl(valorDocumento), valorLinha: brl(valorLinha), ok } };
 })()

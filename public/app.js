@@ -203,7 +203,12 @@
 
   // Delegação de eventos nas tabelas (sem handlers inline → compatível com CSP).
   const aoClicarTabela = async e => {
-    const btn = e.target.closest('button[data-acao]'); if (!btn) return;
+    const btn = e.target.closest('button[data-acao]');
+    if (!btn) { // clique na linha (Dashboard): seleciona para conferência
+      const tr = e.target.closest('tr.linha[data-id]');
+      if (tr && e.currentTarget === $('tb')) { selecionado = Number(tr.dataset.id); renderDashboard(); renderConferencia(); $('conf').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+      return;
+    }
     const id = Number(btn.dataset.id);
     if (!acharBoleto(id)) return;
     switch (btn.dataset.acao) {
@@ -217,6 +222,7 @@
           if (r) { toast('Lançamento desfeito: boleto voltou para a lista', 'ok'); recarregarHist(); }
         }
         return;
+      case 'foto': return abrirFoto(acharBoleto(id));
       case 'det':
         abertos.has(id) ? abertos.delete(id) : abertos.add(id);
         renderDashboard(); return renderHistorico();
@@ -252,7 +258,7 @@
       b.conferencia && `<li>Conferência: soma ${esc(b.conferencia.somaCalc)} · recibo ${esc(b.conferencia.totalRecibo)} · documento ${esc(b.conferencia.valorDocumento)} · linha ${esc(b.conferencia.valorLinha)}</li>`,
       ...(b.problemas || []).map(p => `<li class="prob">${esc(p)}</li>`),
       `<li>Extraído: ${esc(dataHora(b.extraidoEm))} · Lançado: ${esc(dataHora(b.lancadoEm))}</li>`,
-      `<li>Link: <span class="sub2">${esc(b.link)}</span></li>`
+      `<li>Link: <span class="sub2">${esc(b.link)}</span> <button type="button" class="mini" data-acao="foto" data-id="${b.id}">Ver boleto original</button></li>`
     ].filter(Boolean).join('');
     return `<tr class="det"><td colspan="${colunas}"><ul>${itens}</ul></td></tr>`;
   }
@@ -297,12 +303,13 @@
   const filtroAtivo = f => f.busca || f.status !== 'todos' || f.cond || f.de || f.ate || f.min || f.max;
 
   function renderDashboard() {
+    const conferido = boletoConferencia()?.b;
     const linhas = filtrar(E.boletos, F.dash);
     marcarOrdem('thDash', F.dash);
     $('dResultado').innerHTML = filtroAtivo(F.dash) ? `<b>${linhas.length}</b> de ${E.boletos.length}` : '';
     $('tb').innerHTML = linhas.map(([b, i]) => {
       const aberto = abertos.has(b.id);
-      return `<tr class="linha">
+      return `<tr class="linha${conferido?.id === b.id ? ' sel' : ''}" data-id="${b.id}">
         <td><button type="button" class="expandir" data-acao="det" data-id="${b.id}" aria-expanded="${aberto}" aria-label="Detalhes">${ico('i-chev')}</button>${esc(b.condominio || '—')}</td>
         <td>${esc(b.unidade || '—')}</td>
         <td class="num">${esc(b.codIdentificador || '—')}</td>
@@ -544,9 +551,110 @@
     $('versao').textContent = E.app?.versao || '—';
   }
 
+  // ---------- Conferência do lançamento ----------
+  let selecionado = null;
+  // Qual boleto mostrar: o que está sendo lançado > o clicado > o próximo pronto.
+  function boletoConferencia() {
+    const bs = E.boletos;
+    if (E.lancando !== null) { const b = bs.find(x => x.id === E.lancando); if (b) return { b, modo: 'Lançando agora', cls: 'run' }; }
+    const sel = bs.find(x => x.id === selecionado);
+    if (sel) return { b: sel, modo: 'Selecionado', cls: 'wait' };
+    const prox = bs.find(x => x.status === 'pendente' && !temProblema(x));
+    if (prox) return { b: prox, modo: 'Próximo a lançar', cls: 'ok' };
+    return bs[0] ? { b: bs[0], modo: 'Com problema', cls: 'err' } : null;
+  }
+  const centavos = v => Math.round((numBR(v) || 0) * 100);
+  const brl = c => (c / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+  const linhaParaBarras = l => {
+    const d = String(l || '').replace(/\D/g, '');
+    if (d.length === 44) return d;
+    if (d.length !== 47) return null;
+    return d.slice(0, 4) + d[32] + d.slice(33, 47) + d.slice(4, 9) + d.slice(10, 20) + d.slice(21, 31);
+  };
+  let chaveConf = '';
+  function renderConferencia() {
+    const c = boletoConferencia();
+    $('conf').hidden = !c;
+    if (!c) return;
+    const { b } = c;
+    const passo = E.lancando === b.id ? (E.passoLancamento || 'Preparando…') : '';
+    $('confPasso').hidden = !passo;
+    $('confPasso').lastElementChild.textContent = passo;
+    // Etapa atual destacada na lista "Será lançado".
+    const ocs = b.ocorrencias || [];
+    let etapa = -1;
+    if (passo) {
+      if (/identificador/i.test(passo)) etapa = 0; else if (/barras/i.test(passo)) etapa = 1;
+      else { const m = /Ocorrência (\d+) de/.exec(passo); if (m) etapa = 1 + Number(m[1]); else if (/Conclu/i.test(passo)) etapa = 99; }
+    }
+    const chave = JSON.stringify([b.id, b.status, passo, c.modo, b.temCaptura]);
+    if (chave === chaveConf) return; // nada mudou: não redesenha
+    chaveConf = chave;
+
+    $('confModo').className = 'badge ' + c.cls; $('confModo').textContent = c.modo;
+    $('confSub').textContent = c.modo === 'Selecionado' ? 'Boleto escolhido na lista. Clique em outro para trocar.'
+      : 'Confira os itens do recibo e o que será digitado no Via Imob.';
+
+    const dados = [['Condomínio', b.condominio], ['Unidade', b.unidade], ['Cód. identificador', b.codIdentificador],
+      ['Vencimento', b.vencimento], ['Valor do documento', b.conferencia ? 'R$ ' + b.conferencia.valorDocumento : null],
+      ['Linha digitável', b.linhaDigitavel], ['Extraído em', dataHora(b.extraidoEm)]];
+    $('confDados').innerHTML = dados.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v || '—')}</dd>`).join('') +
+      (b.desconto ? `<dt>Desconto</dt><dd>${esc(b.desconto.join(' | '))}</dd>` : '');
+
+    const itens = b.itensRecibo;
+    $('confItens').innerHTML = itens?.length
+      ? `<table class="rec"><tbody>${itens.map(i => `<tr><td>${esc(i.item)}</td><td>R$ ${esc(i.valor)}</td></tr>`).join('')}</tbody>
+         <tfoot><tr><td>Total dos itens</td><td>R$ ${brl(itens.reduce((s, i) => s + centavos(i.valor), 0))}</td></tr></tfoot></table>`
+      : '<p class="mut">Itens não disponíveis (boleto extraído antes desta versão). Use "Ver boleto original" ou extraia de novo.</p>';
+
+    const cls = i => etapa === 99 || i < etapa ? ' class="feito"' : i === etapa ? ' class="atual"' : '';
+    const barras = linhaParaBarras(b.linhaDigitavel);
+    const somaLanc = ocs.reduce((s, o) => s + centavos(o.valor), 0);
+    $('confLanc').innerHTML = [
+      `<li${cls(0)}>Código identificador: <b>${esc(b.codIdentificador || '—')}</b></li>`,
+      `<li${cls(1)}>Código de barras: <code>${esc(barras || 'linha digitável inválida')}</code></li>`,
+      ...ocs.map((o, i) => `<li${cls(2 + i)}>${o.nome ? `<b>${esc(o.nome)}</b>` : `<span class="erro-map">SEM MAPEAMENTO</span>`}
+        <span class="val">R$ ${esc(o.valor)}</span>
+        <span class="hist">${o.nome ? '' : 'Item do recibo: '}${esc(o.itemOriginal)}${o.historico ? ' · histórico: ' + esc(o.historico) : ''}</span></li>`)
+    ].join('') + `<li class="total"><b>Total a lançar: R$ ${brl(somaLanc)}</b></li>`;
+
+    const doc = b.conferencia ? centavos(b.conferencia.valorDocumento) : null;
+    const ok = v => doc !== null && centavos(v) === doc;
+    const checks = b.conferencia ? [
+      ['Itens do recibo', b.itensRecibo ? brl(b.itensRecibo.reduce((s, i) => s + centavos(i.valor), 0)) : null],
+      ['Total do recibo', b.conferencia.totalRecibo], ['Valor da linha digitável', b.conferencia.valorLinha], ['Total a lançar', brl(somaLanc)]
+    ].filter(([, v]) => v != null) : [];
+    $('confCheck').innerHTML = checks.map(([k, v]) => `<span class="check${ok(v) ? '' : ' nao'}">${ok(v) ? '✓' : '✗'} ${k}: R$ ${esc(v)}</span>`).join('') +
+      (doc !== null ? `<span class="check${checks.every(([, v]) => ok(v)) ? '' : ' nao'}">Valor do documento: R$ ${esc(b.conferencia.valorDocumento)}</span>` : '') +
+      (b.problemas || []).map(p => `<span class="check nao">⚠ ${esc(p)}</span>`).join('');
+    $('bVerBoleto').onclick = () => abrirFoto(b);
+  }
+
+  // ---------- Boleto original (captura feita na extração) ----------
+  let urlFoto = null;
+  async function abrirFoto(b) {
+    if (!b) return;
+    $('dlgTitulo').textContent = [b.condominio, b.unidade, b.codIdentificador].filter(Boolean).join(' · ') || 'Boleto';
+    const link = /^https?:\/\//i.test(b.link || '') ? b.link : null;
+    $('dlgLink').hidden = !link; if (link) $('dlgLink').href = link;
+    $('dlgImg').hidden = true; $('dlgVazio').hidden = true;
+    $('dlgBoleto').showModal();
+    try {
+      const r = await fetch('/api/captura?id=' + b.id, { headers: { 'X-Token': TOKEN }, cache: 'no-store' });
+      if (!r.ok) throw 0;
+      if (urlFoto) URL.revokeObjectURL(urlFoto);
+      urlFoto = URL.createObjectURL(await r.blob());
+      $('dlgImg').src = urlFoto; $('dlgImg').hidden = false;
+    } catch { $('dlgVazio').hidden = false; }
+  }
+  $('dlgFechar').onclick = () => $('dlgBoleto').close();
+  $('dlgBoleto').addEventListener('click', e => { if (e.target === $('dlgBoleto')) $('dlgBoleto').close(); });
+  $('dlgBoleto').addEventListener('close', () => { if (urlFoto) { URL.revokeObjectURL(urlFoto); urlFoto = null; } $('dlgImg').removeAttribute('src'); });
+
   function render() {
     renderControles();
     renderDashboard();
+    renderConferencia();
     renderConfig();
     // Dados do banco: recarrega só a tela visível quando algo mudou.
     if (visivel('historico') && histVersao !== E.versao) histAdiado();

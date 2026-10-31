@@ -43,8 +43,14 @@ export async function extrair(fonte, cfg, onItem, ctrl = { pausado: false, parad
   const browser = await chromium.launch({ executablePath: cfg.chrome, headless: true });
   ctrl.browser = browser;
   const ctx = await browser.newContext({ ignoreHTTPSErrors: true, acceptDownloads: false, serviceWorkers: 'block' });
-  // Não baixa imagens/fontes/mídia: só o HTML importa.
-  await ctx.route('**/*', r => ['image', 'font', 'media'].includes(r.request().resourceType()) ? r.abort() : r.continue());
+  // Sem captura, não baixa imagens/fontes (só o HTML importa). Com captura, carrega para a foto ficar fiel.
+  const capturar = cfg.capturarBoleto !== false;
+  const bloquear = capturar ? ['media'] : ['image', 'font', 'media'];
+  await ctx.route('**/*', r => bloquear.includes(r.request().resourceType()) ? r.abort() : r.continue());
+  const foto = async page => {
+    if (!capturar || !page) return null;
+    try { return await page.screenshot({ type: 'jpeg', quality: 72, fullPage: true, timeout: 10000 }); } catch { return null; }
+  };
   const trabalhador = async () => {
     while (!ctrl.parado) {
       // Pausado: espera — a menos que não reste mais nada a fazer (aí encerra normalmente).
@@ -75,13 +81,15 @@ export async function extrair(fonte, cfg, onItem, ctrl = { pausado: false, parad
         ocorrencias.filter(o => !o.nome).forEach(o => problemas.push(`Sem mapeamento: "${o.itemOriginal}" (config.json)`));
 
         if (ctrl.parado) break;
-        onItem(url, { link: url, condominio: d.condominio, unidade: d.unidade, vencimento: d.vencimento, codIdentificador: d.codIdentificador,
+        const captura = await foto(page);
+        if (ctrl.parado) break;
+        onItem(url, { link: url, itensRecibo: d.itensRecibo, condominio: d.condominio, unidade: d.unidade, vencimento: d.vencimento, codIdentificador: d.codIdentificador,
           linhaDigitavel: d.linhaDigitavel, desconto: d.desconto, valorTotal: d.conferencia.valorDocumento,
-          ocorrencias, conferencia: d.conferencia, problemas, status: 'pendente' });
+          ocorrencias, conferencia: d.conferencia, problemas, status: 'pendente' }, captura);
       } catch (e) {
         if (ctrl.parado) break;
         const msg = primeiraLinha(e);
-        onItem(url, { link: url, erroExtracao: msg, problemas: ['Falha na extração: ' + msg], ocorrencias: [], status: 'erro' });
+        onItem(url, { link: url, erroExtracao: msg, problemas: ['Falha na extração: ' + msg], ocorrencias: [], status: 'erro' }, await foto(page));
       } finally { await page?.close().catch(() => {}); }
     }
   };

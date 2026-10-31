@@ -7,6 +7,8 @@
   "viewportViaImob": { "width": 940, "height": 588 },
   "concorrenciaExtracao": 3,
   "esperaMs": 1500,
+  "capturarBoleto": true,
+  "diasCapturas": 90,
   "mapaOcorrencias": [
     { "regex": "^fundo", "nome": "Fundo de Reserva DP-F" },
     { "regex": "^cham", "nome": "Chamada Extra DP - F" },

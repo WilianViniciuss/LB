@@ -130,6 +130,21 @@
         </div>
       </div>
 
+      <div class="card conf" id="conf" hidden>
+        <div class="card-h">
+          <span class="ico roxo"><svg><use href="#i-barcode"/></svg></span>
+          <div><h2>Conferência do Lançamento <span id="confModo" class="badge run"></span></h2><p id="confSub">Clique em um boleto da lista para conferir.</p></div>
+          <div class="h-acoes"><button id="bVerBoleto" class="btn-light" type="button"><svg><use href="#i-doc"/></svg>Ver boleto original</button></div>
+        </div>
+        <div id="confPasso" class="passo" hidden><span class="spin"></span><span></span></div>
+        <div class="conf-grid">
+          <section><h3>Dados do boleto</h3><dl id="confDados" class="cfg mini-dl"></dl></section>
+          <section><h3>Itens do recibo <small>como está no link</small></h3><div id="confItens"></div></section>
+          <section><h3>Será lançado no Via Imob <small>nesta ordem</small></h3><ol id="confLanc" class="lanc"></ol></section>
+        </div>
+        <div id="confCheck" class="checks"></div>
+      </div>
+
       <div class="card barra">
         <button id="bExtrair" class="acao primaria" type="button"><svg><use href="#i-play"/></svg><span><b>Iniciar Extração</b><small>Comece a processar os dados</small></span></button>
         <button id="bPausar" class="acao" type="button" disabled><span class="bola"><svg><use href="#i-pause"/></svg></span><span><b>Pausar</b><small>Pause o processo atual</small></span></button>
@@ -255,6 +270,11 @@
     </footer>
   </div>
 </div>
+<dialog id="dlgBoleto" class="dlg">
+  <div class="dlg-h"><b id="dlgTitulo">Boleto</b><a id="dlgLink" class="btn-light" target="_blank" rel="noopener noreferrer">Abrir link</a>
+    <button id="dlgFechar" class="icon-btn" type="button" aria-label="Fechar">×</button></div>
+  <div class="dlg-corpo"><img id="dlgImg" alt="Captura da página do boleto"><p id="dlgVazio" class="mut" hidden>Captura não disponível para este boleto (extraído antes desta versão ou a página não carregou).</p></div>
+</dialog>
 <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 </body>
 </html>

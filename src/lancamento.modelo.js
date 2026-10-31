@@ -38,7 +38,11 @@
     return d.slice(0, 4) + d[32] + d.slice(33, 47) + d.slice(4, 9) + d.slice(10, 20) + d.slice(21, 31);
   };
 
-  const addOcorrencia = async ({ nome, valor, historico }) => {
+  // Etapas informadas ao app (aparecem ao vivo no painel de conferência).
+  const passo = t => console.log('[LB] ' + t);
+
+  const addOcorrencia = async ({ nome, valor, historico }, i, total) => {
+    passo(`Ocorrência ${i + 1} de ${total}: ${nome} — R$ ${valor}${historico ? ' — ' + historico : ''}`);
     const prev = activeCanvas();
     click(23, 293);
     const w = await waitNewWindow(prev);
@@ -59,10 +63,13 @@
   const data = /*__DADOS__*/;
   // ===========================
 
+  passo('Digitando código identificador: ' + data.codIdentificador);
   click(100, 112); await sleep(500);
   await type(data.codIdentificador); key('Tab'); await sleep(2800);
+  const barras = linhaParaBarras(data.linhaDigitavel);
+  passo('Digitando código de barras: ' + barras);
   click(330, 154); await sleep(500);
-  await type(linhaParaBarras(data.linhaDigitavel), 15); key('Tab'); await sleep(2800);
-  for (const o of data.ocorrencias) await addOcorrencia(o);
-  console.log('Lançamento concluído. Confira o Total e clique em Gravar.');
+  await type(barras, 15); key('Tab'); await sleep(2800);
+  for (let i = 0; i < data.ocorrencias.length; i++) await addOcorrencia(data.ocorrencias[i], i, data.ocorrencias.length);
+  passo('Concluído. Confira o Total e clique em Gravar.');
 })();

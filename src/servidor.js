@@ -29,7 +29,23 @@ const estado = {
   lancando: null // id do boleto em lançamento
 };
 // ---------- Banco local ----------
-const banco = abrirBanco(process.env.LB_DADOS || path.join(raiz, 'dados'));
+const dirDados = process.env.LB_DADOS || path.join(raiz, 'dados');
+const banco = abrirBanco(dirDados);
+// Capturas (foto da página do boleto): dados/capturas/<id>.jpg, apagadas após N dias.
+const dirCapturas = path.join(dirDados, 'capturas');
+fs.mkdirSync(dirCapturas, { recursive: true });
+const arqCaptura = id => path.join(dirCapturas, `${Number(id)}.jpg`);
+function limparCapturasAntigas() {
+  const limite = Date.now() - (Number(cfg.diasCapturas) || 90) * 86400000;
+  try {
+    for (const f of fs.readdirSync(dirCapturas)) {
+      const arq = path.join(dirCapturas, f);
+      if (/^\d+\.jpg$/.test(f) && fs.statSync(arq).mtimeMs < limite) fs.rmSync(arq, { force: true });
+    }
+  } catch {}
+}
+limparCapturasAntigas();
+setInterval(limparCapturasAntigas, 24 * 3600 * 1000).unref();
 // Migração única do antigo plano_lote.json para o banco.
 const arqPlano = path.join(raiz, 'plano_lote.json');
 if (fs.existsSync(arqPlano)) {
@@ -160,8 +176,13 @@ async function lancar(id) {
   const dup = banco.jaLancado(b.linhaDigitavel, b.id);
   if (dup) throw erro(`Este boleto já foi lançado (registro #${dup.id}). Lançamento bloqueado.`, 409);
   estado.lancando = id;
+  estado.passoLancamento = 'Preparando…';
+  let page = null;
+  // O script de lançamento informa cada etapa via console ("[LB] ...") → painel de conferência.
+  const aoLog = msg => { const t = msg.text(); if (t.startsWith('[LB] ')) { estado.passoLancamento = t.slice(5); mudou(false); } };
   try {
-    const page = await abaAtiva();
+    page = await abaAtiva();
+    page.on('console', aoLog);
     b.status = 'lancando'; delete b.erroLancamento; salvarBoleto(b);
     await page.evaluate(gerarScript(b));
     b.status = 'lancado';
@@ -169,7 +190,10 @@ async function lancar(id) {
     estado.boletos = estado.boletos.filter(x => x.id !== b.id); // sai da lista → Histórico
   } catch (e) {
     b.status = 'erro'; b.erroLancamento = String(e.message).split('\n')[0];
-  } finally { estado.lancando = null; salvarBoleto(b); }
+  } finally {
+    page?.off('console', aoLog);
+    estado.lancando = null; estado.passoLancamento = null; salvarBoleto(b);
+  }
   return b;
 }
 
@@ -194,12 +218,13 @@ function processarFila() {
     if (url) emAndamento.add(url);
     return url;
   };
-  extrair(proximo, cfg, (url, novo) => {
+  extrair(proximo, cfg, (url, novo, captura) => {
     novo.extraidoEm = new Date().toISOString();
     try {
       const { boleto, duplicado } = banco.registrarExtracao(novo);
       if (duplicado) { ex().duplicados++; estado.duplicidades = banco.contarDuplicidades(); }
       else {
+        if (captura) { try { fs.writeFileSync(arqCaptura(boleto.id), captura); boleto.temCaptura = true; banco.atualizar(boleto); } catch {} }
         const i = estado.boletos.findIndex(x => x.id === boleto.id);
         if (i >= 0) estado.boletos[i] = boleto; else estado.boletos.push(boleto);
       }
@@ -258,7 +283,7 @@ const SEGURANCA = {
   'Referrer-Policy': 'no-referrer',
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Resource-Policy': 'same-origin',
-  'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+  'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 };
 
 // Arquivos estáticos carregados em memória na inicialização (whitelist — sem path traversal).
@@ -334,6 +359,7 @@ const rotas = {
     if (!idValido(id)) throw erro('Boleto inválido', 400);
     if (estado.lancando === id) throw erro('Boleto em lançamento', 409);
     if (!banco.excluir(id)) throw erro('Só é possível excluir boletos ainda não lançados', 409);
+    fs.rmSync(arqCaptura(id), { force: true });
     estado.boletos = estado.boletos.filter(x => x.id !== id); mudou(); return { ok: true };
   },
   // Desfaz um lançamento (ex.: não foi gravado no Via Imob): volta para a lista.
@@ -399,6 +425,12 @@ const servidor = http.createServer(async (req, res) => {
       if (arq) return responder(res, 200, req.method === 'HEAD' ? undefined : arq.corpo, arq.tipo);
       if (url.pathname.startsWith('/api/') && !tokenOk(req)) return json(res, { erro: 'Não autorizado' }, 403);
       if (consultas[url.pathname]) return json(res, consultas[url.pathname](url.searchParams));
+      if (url.pathname === '/api/captura') {
+        const id = url.searchParams.get('id');
+        if (!/^\d+$/.test(id || '')) return json(res, { erro: 'id inválido' }, 400);
+        let img; try { img = fs.readFileSync(arqCaptura(id)); } catch { return json(res, { erro: 'Captura não disponível' }, 404); }
+        return responder(res, 200, img, 'image/jpeg');
+      }
       if (url.pathname === '/api/estado') {
         // Polling barato: sem mudança desde a versão do cliente → 204 sem corpo.
         if (url.searchParams.get('v') === String(estado.versao)) return responder(res, 204);
