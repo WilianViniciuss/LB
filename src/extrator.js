@@ -73,8 +73,7 @@ export async function extrair(links, cfg, onItem, ctrl = { pausado: false, parad
         ocorrencias.filter(o => !o.nome).forEach(o => problemas.push(`Sem mapeamento: "${o.itemOriginal}" (config.json)`));
 
         if (ctrl.parado) break;
-        onItem(i, { link: url, condominio: d.condominio, unidade: d.unidade, proprietario: d.proprietario,
-          documento: d.documento, vencimento: d.vencimento, codIdentificador: d.codIdentificador,
+        onItem(i, { link: url, condominio: d.condominio, unidade: d.unidade, vencimento: d.vencimento, codIdentificador: d.codIdentificador,
           linhaDigitavel: d.linhaDigitavel, desconto: d.desconto, valorTotal: d.conferencia.valorDocumento,
           ocorrencias, conferencia: d.conferencia, problemas, status: 'pendente' });
       } catch (e) {

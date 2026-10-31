@@ -195,9 +195,9 @@
     $('tb').innerHTML = bs.map((b, i) => {
       const aberto = abertos.has(b.link);
       return `<tr class="linha">
-        <td><button type="button" class="expandir" data-acao="det" data-i="${i}" aria-expanded="${aberto}" aria-label="Detalhes">${ico('i-chev')}</button>${esc(b.condominio || '—')}<div class="sub2">${esc(b.unidade || '')}</div></td>
-        <td>${esc(b.proprietario || '—')}</td>
-        <td class="num">${esc(b.documento || '—')}</td>
+        <td><button type="button" class="expandir" data-acao="det" data-i="${i}" aria-expanded="${aberto}" aria-label="Detalhes">${ico('i-chev')}</button>${esc(b.condominio || '—')}</td>
+        <td>${esc(b.unidade || '—')}</td>
+        <td class="num">${esc(b.codIdentificador || '—')}</td>
         <td class="num">${esc(b.vencimento || '—')}</td>
         <td class="num">${b.conferencia ? 'R$ ' + esc(b.conferencia.valorDocumento) : '—'}</td>
         <td>${tagStatus(b)}</td>
