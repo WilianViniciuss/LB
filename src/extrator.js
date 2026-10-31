@@ -29,27 +29,29 @@ export const criarMapeador = mapa => {
 };
 
 /**
- * @param {string[]} links
+ * @param {string[] | (() => string|null)} fonte  lista de links ou função que entrega o próximo link (fila persistente)
  * @param {object} cfg
- * @param {(i:number, boleto:object) => void} onItem
+ * @param {(url:string, boleto:object) => void} onItem
  * @param {{pausado:boolean, parado:boolean, browser?:any}} ctrl  controle de pausa/parada
+ * @param {number} [estimativa]  quantidade de links (define a concorrência)
  */
-export async function extrair(links, cfg, onItem, ctrl = { pausado: false, parado: false }) {
+export async function extrair(fonte, cfg, onItem, ctrl = { pausado: false, parado: false }, estimativa) {
+  const lista = Array.isArray(fonte) ? [...fonte] : null;
+  const proximo = lista ? () => lista.shift() ?? null : fonte;
+  const quantos = lista ? lista.length : (estimativa || 1);
   const nomeDe = criarMapeador(cfg.mapaOcorrencias);
   const browser = await chromium.launch({ executablePath: cfg.chrome, headless: true });
   ctrl.browser = browser;
   const ctx = await browser.newContext({ ignoreHTTPSErrors: true, acceptDownloads: false, serviceWorkers: 'block' });
   // Não baixa imagens/fontes/mídia: só o HTML importa.
   await ctx.route('**/*', r => ['image', 'font', 'media'].includes(r.request().resourceType()) ? r.abort() : r.continue());
-  const fila = [...links.entries()];
-
   const trabalhador = async () => {
-    while (fila.length && !ctrl.parado) {
-      while (ctrl.pausado && !ctrl.parado) await sleep(300);
+    while (!ctrl.parado) {
+      // Pausado: espera — a menos que não reste mais nada a fazer (aí encerra normalmente).
+      while (ctrl.pausado && !ctrl.parado && (ctrl.temMais?.() ?? true)) await sleep(300);
       if (ctrl.parado) break;
-      const item = fila.shift();
-      if (!item) break;
-      const [i, url] = item;
+      const url = proximo();
+      if (!url) break;
       let page;
       try {
         page = await ctx.newPage();
@@ -73,18 +75,18 @@ export async function extrair(links, cfg, onItem, ctrl = { pausado: false, parad
         ocorrencias.filter(o => !o.nome).forEach(o => problemas.push(`Sem mapeamento: "${o.itemOriginal}" (config.json)`));
 
         if (ctrl.parado) break;
-        onItem(i, { link: url, condominio: d.condominio, unidade: d.unidade, vencimento: d.vencimento, codIdentificador: d.codIdentificador,
+        onItem(url, { link: url, condominio: d.condominio, unidade: d.unidade, vencimento: d.vencimento, codIdentificador: d.codIdentificador,
           linhaDigitavel: d.linhaDigitavel, desconto: d.desconto, valorTotal: d.conferencia.valorDocumento,
           ocorrencias, conferencia: d.conferencia, problemas, status: 'pendente' });
       } catch (e) {
         if (ctrl.parado) break;
         const msg = primeiraLinha(e);
-        onItem(i, { link: url, erroExtracao: msg, problemas: ['Falha na extração: ' + msg], ocorrencias: [], status: 'erro' });
+        onItem(url, { link: url, erroExtracao: msg, problemas: ['Falha na extração: ' + msg], ocorrencias: [], status: 'erro' });
       } finally { await page?.close().catch(() => {}); }
     }
   };
   try {
-    const n = Math.min(Math.max(1, cfg.concorrenciaExtracao | 0 || 3), 8, links.length);
+    const n = Math.min(Math.max(1, cfg.concorrenciaExtracao | 0 || 3), 8, Math.max(1, quantos));
     await Promise.all(Array.from({ length: n }, trabalhador));
   } finally {
     ctrl.browser = null;

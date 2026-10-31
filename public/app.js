@@ -120,12 +120,18 @@
 
   // ---------- Ações ----------
   $('bExtrair').onclick = async () => {
-    if (!contarLinks($('links').value)) return toast('Adicione ao menos um link', 'erro');
+    const temFila = (E.extracao?.fila || 0) > 0;
+    if (!contarLinks($('links').value) && !temFila) return toast('Adicione ao menos um link', 'erro');
     const r = await api('/api/extrair', { texto: $('links').value });
-    if (r) toast(`Extração iniciada: ${plural(r.total, 'link', 'links')}`, 'ok');
+    if (!r) return;
+    if (r.retomado) toast(`Continuando de onde parou: ${plural(r.fila, 'link restante', 'links restantes')}`, 'ok');
+    else toast(`${plural(r.novos, 'link adicionado', 'links adicionados')} à fila${temFila ? ' (continuando a extração anterior)' : ''}`, 'ok');
   };
   $('bPausar').onclick = () => api('/api/extracao/pausar');
-  $('bParar').onclick = async () => { if (confirm('Interromper a extração?')) { const r = await api('/api/extracao/parar'); if (r) toast('Extração interrompida'); } };
+  $('bParar').onclick = async () => {
+    if (!confirm(`Parar de vez a extração?\nOs ${plural(E.extracao?.fila || 0, 'link restante será descartado', 'links restantes serão descartados')}. Para continuar depois, use Pausar.`)) return;
+    if (await api('/api/extracao/parar')) toast('Extração parada');
+  };
   $('bVia').onclick = async () => {
     $('bVia').disabled = true;
     try { await api('/api/via/abrir'); } finally { $('bVia').disabled = false; }
@@ -498,9 +504,13 @@
     const n = s => bs.filter(b => !temProblema(b) && b.status === s).length;
     const prob = bs.filter(temProblema).length, pend = n('pendente');
 
-    $('bExtrair').disabled = !!x.rodando;
-    $('bPausar').disabled = !x.rodando;
-    $('bParar').disabled = !x.rodando;
+    const temFila = (x.fila || 0) > 0;
+    const pausado = !!x.pausado; // pausado em execução ou fila salva aguardando
+    $('bExtrair').disabled = !!x.rodando && !pausado;
+    $('bExtrair').querySelector('b').textContent = temFila && !x.rodando ? 'Continuar Extração' : 'Iniciar Extração';
+    $('bExtrair').querySelector('small').textContent = temFila && !x.rodando ? `${plural(x.fila, 'link restante', 'links restantes')}` : 'Comece a processar os dados';
+    $('bPausar').disabled = !x.rodando && !temFila;
+    $('bParar').disabled = !x.rodando && !temFila;
     $('bPausar').classList.toggle('ativo', !!x.pausado);
     $('bPausar').querySelector('b').textContent = x.pausado ? 'Retomar' : 'Pausar';
     $('bPausar').querySelector('small').textContent = x.pausado ? 'Continue o processo' : 'Pause o processo atual';
@@ -512,12 +522,12 @@
     $('viaTxt').textContent = E.via.aberto ? 'Navegador aberto' : 'Acesse o site de origem';
 
     const pw = $('progWrap');
-    pw.hidden = !x.rodando;
+    pw.hidden = !x.rodando && !temFila;
     pw.classList.toggle('pausa', !!x.pausado);
     $('progBar').style.width = x.total ? (100 * x.feitos / x.total).toFixed(1) + '%' : '0';
 
     let cls = 'ok', icone = 'i-check', txt = 'Pronto para iniciar';
-    if (x.rodando && x.pausado) [cls, icone, txt] = ['wait', 'i-pause', `Pausado · ${x.feitos}/${x.total}`];
+    if (pausado && temFila) [cls, icone, txt] = ['wait', 'i-pause', `Pausado · ${x.feitos}/${x.total} — clique em Retomar`];
     else if (x.rodando) [cls, icone, txt] = ['run', 'i-play', `Extraindo · ${x.feitos}/${x.total}`];
     else if (E.lancando !== null) [cls, icone, txt] = ['run', 'i-barcode', 'Lançando boleto…'];
     else if (x.erro) [cls, icone, txt] = ['err', 'i-stop', 'Erro: ' + x.erro];
@@ -558,7 +568,13 @@
   async function tick() {
     try {
       const r = await fetch('/api/estado?v=' + E.versao, { headers: { 'X-Token': TOKEN }, cache: 'no-store' });
-      if (r.status === 200) { E = await r.json(); render(); }
+      if (r.status === 200) {
+        const primeira = E.versao === -1;
+        E = await r.json(); render();
+        if (primeira && E.extracao?.retomada && E.extracao.fila)
+          toast(E.extracao.pausado ? `Extração pausada: ${plural(E.extracao.fila, 'link restante', 'links restantes')}. Clique em Retomar.`
+            : `Continuando a extração de onde parou (${plural(E.extracao.fila, 'link restante', 'links restantes')})`, 'ok');
+      }
       else if (r.status !== 204) throw new Error(r.status);
       setOnline(true);
     } catch { setOnline(false); }

@@ -76,6 +76,9 @@ export function abrirBanco(dir) {
       dados TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS ix_dup_data ON duplicidades(detectado_em);
+    -- Fila de extração persistente: o link só sai daqui depois de processado.
+    CREATE TABLE IF NOT EXISTS fila_extracao (url TEXT PRIMARY KEY, ordem INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS controle (chave TEXT PRIMARY KEY, valor TEXT);
     CREATE INDEX IF NOT EXISTS ix_links_cond ON links(condominio_id);
     CREATE INDEX IF NOT EXISTS ix_bol_linha ON boletos(linha_digitavel);
     CREATE INDEX IF NOT EXISTS ix_bol_link ON boletos(link_id);
@@ -116,6 +119,14 @@ export function abrirBanco(dir) {
     dupContar: db.prepare('SELECT COUNT(*) n FROM duplicidades'),
     dupRemover: db.prepare('DELETE FROM duplicidades WHERE id = ?'),
     dupLimpar: db.prepare('DELETE FROM duplicidades'),
+    filaAdd: db.prepare('INSERT OR IGNORE INTO fila_extracao (url, ordem) VALUES (?, (SELECT COALESCE(MAX(ordem), 0) + 1 FROM fila_extracao))'),
+    filaProx: db.prepare('SELECT url FROM fila_extracao ORDER BY ordem LIMIT ?'),
+    filaDel: db.prepare('DELETE FROM fila_extracao WHERE url = ?'),
+    filaCount: db.prepare('SELECT COUNT(*) n FROM fila_extracao'),
+    filaClear: db.prepare('DELETE FROM fila_extracao'),
+    kvGet: db.prepare('SELECT valor FROM controle WHERE chave = ?'),
+    kvSet: db.prepare('INSERT INTO controle (chave, valor) VALUES (?, ?) ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor'),
+    kvDel: db.prepare('DELETE FROM controle WHERE chave = ?'),
     contar: db.prepare('SELECT COUNT(*) n FROM boletos')
   };
 
@@ -293,6 +304,15 @@ export function abrirBanco(dir) {
     duplicidades, contarDuplicidades: () => st.dupContar.get().n,
     removerDuplicidade: id => st.dupRemover.run(Number(id)).changes,
     limparDuplicidades: () => st.dupLimpar.run().changes,
+    // Fila de extração
+    filaAdicionar: transacao(urls => urls.reduce((n, u) => n + Number(st.filaAdd.run(u).changes), 0)),
+    filaProxima: ignorar => st.filaProx.all(ignorar.size + 1).map(r => r.url).find(u => !ignorar.has(u)) ?? null,
+    filaRemover: url => st.filaDel.run(url).changes,
+    filaContar: () => st.filaCount.get().n,
+    filaLimpar: () => st.filaClear.run().changes,
+    // Controle (chave → JSON)
+    kvLer: k => { const r = st.kvGet.get(k); try { return r ? JSON.parse(r.valor) : null; } catch { return null; } },
+    kvGravar: (k, v) => (v == null ? st.kvDel.run(k) : st.kvSet.run(k, JSON.stringify(v))),
     condominios, linksDe, criarCondominio, vincularLinks, removerLink,
     importarJson, backupDiario, vazio: () => st.contar.get().n === 0,
     fechar: () => { try { db.close(); } catch {} }

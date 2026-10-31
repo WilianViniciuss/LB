@@ -22,8 +22,8 @@ const estado = {
   app: { versao: versaoApp },
   config: { chrome: cfg.chrome, porta, urlViaImob: cfg.urlViaImob, viewportViaImob: cfg.viewportViaImob,
     concorrenciaExtracao: cfg.concorrenciaExtracao, esperaMs: cfg.esperaMs, mapaOcorrencias: cfg.mapaOcorrencias },
-  atualizadoEm: null,
-  extracao: { rodando: false, pausado: false, total: 0, feitos: 0, erro: null },
+  atualizadoEm: new Date().toISOString(),
+  extracao: { rodando: false, pausado: false, total: 0, feitos: 0, duplicados: 0, fila: 0, erro: null },
   boletos: [],
   via: { aberto: false },
   lancando: null // id do boleto em lançamento
@@ -174,30 +174,76 @@ async function lancar(id) {
 }
 
 // ---------- Extração ----------
+// A fila fica no banco: fechar o app no meio não perde nada. Ao abrir de novo, a extração
+// continua sozinha (ou fica pausada, se foi pausada). "Parar" descarta a fila.
 let ctrl = null;
-function iniciarExtracao(texto) {
-  if (estado.extracao.rodando) throw erro('Extração já em andamento', 409);
-  const links = Array.isArray(texto) ? texto : separarLinks(texto);
-  if (!links.length) throw Object.assign(new Error('Nenhum link encontrado'), { code: 400 });
-  ctrl = { pausado: false, parado: false };
-  const c = ctrl;
-  estado.extracao = { rodando: true, pausado: false, total: links.length, feitos: 0, duplicados: 0, erro: null };
-  mudou(false);
-  extrair(links, cfg, (_, novo) => {
+const emAndamento = new Set();
+const ex = () => estado.extracao;
+const persistirExtracao = () => {
+  ex().fila = banco.filaContar();
+  banco.kvGravar('extracao', ex().fila ? { pausado: ex().pausado, total: ex().total, feitos: ex().feitos, duplicados: ex().duplicados } : null);
+};
+
+function processarFila() {
+  if (ctrl) return;
+  const c = ctrl = { pausado: false, parado: false, temMais: () => banco.filaContar() > emAndamento.size };
+  Object.assign(ex(), { rodando: true, pausado: false, erro: null });
+  persistirExtracao(); mudou(false);
+  const proximo = () => {
+    const url = c.parado ? null : banco.filaProxima(emAndamento);
+    if (url) emAndamento.add(url);
+    return url;
+  };
+  extrair(proximo, cfg, (url, novo) => {
     novo.extraidoEm = new Date().toISOString();
     try {
       const { boleto, duplicado } = banco.registrarExtracao(novo);
-      if (duplicado) { estado.extracao.duplicados++; estado.duplicidades = banco.contarDuplicidades(); }
+      if (duplicado) { ex().duplicados++; estado.duplicidades = banco.contarDuplicidades(); }
       else {
         const i = estado.boletos.findIndex(x => x.id === boleto.id);
         if (i >= 0) estado.boletos[i] = boleto; else estado.boletos.push(boleto);
       }
+      banco.filaRemover(url); // só sai da fila depois de gravado
     } catch (e) { console.error('Falha ao gravar boleto:', e.message); }
-    estado.extracao.feitos++; mudou();
-  }, c)
-    .catch(e => { if (!c.parado) estado.extracao.erro = String(e.message).split('\n')[0]; })
-    .finally(() => { estado.extracao.rodando = false; estado.extracao.pausado = false; if (ctrl === c) ctrl = null; mudou(false); });
-  return links.length;
+    emAndamento.delete(url);
+    ex().feitos++; persistirExtracao(); mudou();
+  }, c, ex().fila)
+    .catch(e => { if (!c.parado) ex().erro = String(e.message).split('\n')[0]; })
+    .finally(() => {
+      emAndamento.clear();
+      if (ctrl === c) ctrl = null;
+      if (c.parado) banco.filaLimpar();
+      ex().rodando = false;
+      // Sobrou fila sem ter sido parado (ex.: falha do Chrome): fica pausada para retomar.
+      ex().pausado = !c.parado && banco.filaContar() > 0;
+      persistirExtracao(); mudou(false);
+    });
+}
+
+/** Adiciona links à fila e inicia (ou continua) a extração. Sem links novos, apenas retoma a fila. */
+function iniciarExtracao(texto) {
+  const links = Array.isArray(texto) ? texto : separarLinks(texto);
+  const filaAntes = banco.filaContar();
+  const novos = links.length ? banco.filaAdicionar(links) : 0;
+  if (!novos && !filaAntes) throw erro(links.length ? 'Esses links já estão na fila' : 'Nenhum link encontrado', 400);
+  if (!filaAntes && !ex().rodando) Object.assign(ex(), { total: novos, feitos: 0, duplicados: 0 });
+  else ex().total += novos;
+  persistirExtracao();
+  if (ctrl) { if (ctrl.pausado) { ctrl.pausado = false; ex().pausado = false; persistirExtracao(); } mudou(false); }
+  else processarFila();
+  return { novos, fila: ex().fila, retomado: !novos };
+}
+
+// Retomada na inicialização (o processamento só começa depois que este processo assume a porta).
+let retomarAoIniciar = false;
+{
+  const salvo = banco.kvLer('extracao'), nFila = banco.filaContar();
+  if (nFila) {
+    Object.assign(estado.extracao, { rodando: false, pausado: !!salvo?.pausado, total: salvo?.total ?? nFila,
+      feitos: salvo?.feitos ?? 0, duplicados: salvo?.duplicados ?? 0, fila: nFila, retomada: true });
+    if (!salvo?.pausado) { console.log(`Retomando extração: ${nFila} links restantes`); retomarAoIniciar = true; }
+    else console.log(`Extração pausada: ${nFila} links restantes`);
+  } else banco.kvGravar('extracao', null);
 }
 
 // ---------- HTTP ----------
@@ -250,16 +296,25 @@ const tokenOk = req => {
 };
 
 const rotas = {
-  'POST /api/extrair': async b => ({ ok: true, total: iniciarExtracao(String(b.texto ?? '')) }),
+  'POST /api/extrair': async b => ({ ok: true, ...iniciarExtracao(String(b.texto ?? '')) }),
+  // Pausar / Retomar. A pausa fica salva: fechando e abrindo o app, continua pausada.
   'POST /api/extracao/pausar': async () => {
-    if (!ctrl) throw erro('Nenhuma extração em andamento', 409);
-    ctrl.pausado = !ctrl.pausado; estado.extracao.pausado = ctrl.pausado; mudou(false);
-    return { ok: true, pausado: ctrl.pausado };
+    if (ctrl) {
+      ctrl.pausado = !ctrl.pausado; ex().pausado = ctrl.pausado;
+      persistirExtracao(); mudou(false);
+      return { ok: true, pausado: ctrl.pausado };
+    }
+    if (!banco.filaContar()) throw erro('Nenhuma extração em andamento', 409);
+    processarFila(); // retoma a fila salva
+    return { ok: true, pausado: false };
   },
+  // Parar: interrompe de vez e descarta os links restantes.
   'POST /api/extracao/parar': async () => {
-    if (!ctrl) throw erro('Nenhuma extração em andamento', 409);
-    ctrl.parado = true; ctrl.pausado = false;
-    await ctrl.browser?.close().catch(() => {});
+    if (!ctrl && !banco.filaContar()) throw erro('Nenhuma extração em andamento', 409);
+    banco.filaLimpar();
+    if (ctrl) { ctrl.parado = true; ctrl.pausado = false; await ctrl.browser?.close().catch(() => {}); }
+    Object.assign(ex(), { pausado: false, fila: 0, retomada: false });
+    banco.kvGravar('extracao', null); mudou(false);
     return { ok: true };
   },
   // Remove da lista os boletos ainda não lançados (os lançados continuam no Histórico).
@@ -314,7 +369,8 @@ const rotas = {
     if (condominioId !== 'sem' && !idValido(condominioId)) throw erro('Condomínio inválido', 400);
     const urls = banco.linksDe(condominioId).map(l => l.url);
     if (!urls.length) throw erro('Este condomínio não tem links', 400);
-    return { ok: true, total: iniciarExtracao(urls) };
+    const r = iniciarExtracao(urls);
+    return { ok: true, total: r.novos, ...r };
   }
 };
 
@@ -400,6 +456,7 @@ servidor.on('error', e => {
 });
 servidor.listen(porta, '127.0.0.1', () => {
   servidorPrincipal = true;
+  if (retomarAoIniciar) setTimeout(processarFila, 1500);
   console.log(`Interface em http://localhost:${porta}`);
   abrirJanela();
 });
