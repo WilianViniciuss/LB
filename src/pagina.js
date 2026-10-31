@@ -52,6 +52,15 @@
     .split('\n').map(s => s.trim()).filter(Boolean);
   const desconto = instr.filter(l => /desconto|abatimento/i.test(l));
 
+  // Pagador (proprietário), CPF/CNPJ e vencimento — heurísticos; null se não encontrados.
+  const reDoc = /(?<!\d)\d{3}\.?\d{3}\.?\d{3}-?\d{2}(?!\d)|\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}/;
+  const pIdx = txt.lastIndexOf('Pagador:');
+  const pTrecho = pIdx < 0 ? '' : txt.slice(pIdx + 8, pIdx + 400);
+  const documento = (pTrecho.match(reDoc) || [])[0] || null;
+  const proprietario = (pTrecho.split('\n').map(s => s.trim()).find(Boolean) || '')
+    .split(reDoc)[0].replace(/CPF\/?CNPJ:?|CPF:?|CNPJ:?/gi, '').replace(/[\s\-–,:]+$/, '').trim() || null;
+  const vencimento = (txt.match(/Vencimento[\s\S]{0,60}?(\d{2}\/\d{2}\/\d{4})/i) || [])[1] || null;
+
   const ldM = document.documentElement.innerHTML
     .match(/\d{5}\.?\d{5}\s*\d{5}\.?\d{6}\s*\d{5}\.?\d{6}\s*\d\s*\d{14}/);
   const linhaDigitavel = ldM ? ldM[0].replace(/\s+/g, ' ') : null;
@@ -63,7 +72,7 @@
   const valorLinha     = linhaDigitavel ? parseInt(linhaDigitavel.split(' ').pop().slice(4), 10) / 100 : 0;
   const ok = [somaItens, totalRecibo, valorDocumento, valorLinha].every(v => c(v) === c(somaCalc));
 
-  return { condominio: linhas[0], unidade: linhas.at(-1), codIdentificador, chamadaExtra, fundos, multa, mudanca, outros,
+  return { condominio: linhas[0], unidade: linhas.at(-1), proprietario, documento, vencimento, codIdentificador, chamadaExtra, fundos, multa, mudanca, outros,
            desconto: desconto.length ? desconto : null, linhaDigitavel,
            conferencia: { somaCalc: brl(somaCalc), totalRecibo: brl(totalRecibo), valorDocumento: brl(valorDocumento), valorLinha: brl(valorLinha), ok } };
 })()

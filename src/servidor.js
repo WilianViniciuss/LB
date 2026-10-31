@@ -1,36 +1,67 @@
-// Interface local (http://localhost:3737). Extração em segundo plano + navegador próprio do Via Imob para lançamento.
+// Interface local (http://localhost:<porta>). Extração em segundo plano + navegador próprio do Via Imob para lançamento.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { exec } from 'node:child_process';
+import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { extrair, separarLinks, gerarScript } from './extrator.js';
 
 const raiz = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const cfg = JSON.parse(fs.readFileSync(path.join(raiz, 'config.json'), 'utf8'));
+const cfg = JSON.parse(fs.readFileSync(process.env.LB_CONFIG || path.join(raiz, 'config.json'), 'utf8'));
+const { version: versaoApp } = JSON.parse(fs.readFileSync(path.join(raiz, 'package.json'), 'utf8'));
 const arqPlano = path.join(raiz, 'plano_lote.json');
 
+const porta = Number(cfg.porta);
+if (!Number.isInteger(porta) || porta < 1024 || porta > 65535) throw new Error('config.json: "porta" inválida');
+
+// ---------- Estado ----------
 const estado = {
-  extracao: { rodando: false, total: 0, feitos: 0 },
+  versao: 0,
+  app: { versao: versaoApp },
+  config: { chrome: cfg.chrome, porta, urlViaImob: cfg.urlViaImob, viewportViaImob: cfg.viewportViaImob,
+    concorrenciaExtracao: cfg.concorrenciaExtracao, esperaMs: cfg.esperaMs, mapaOcorrencias: cfg.mapaOcorrencias },
+  atualizadoEm: null,
+  extracao: { rodando: false, pausado: false, total: 0, feitos: 0, erro: null },
   boletos: [],
   via: { aberto: false },
   lancando: null // índice em andamento
 };
-try { estado.boletos = JSON.parse(fs.readFileSync(arqPlano, 'utf8')).boletos || []; } catch {}
-const salvar = () => fs.writeFileSync(arqPlano, JSON.stringify({ atualizadoEm: new Date().toISOString(), boletos: estado.boletos }, null, 2));
+try {
+  const salvo = JSON.parse(fs.readFileSync(arqPlano, 'utf8'));
+  estado.boletos = Array.isArray(salvo.boletos) ? salvo.boletos : [];
+  estado.atualizadoEm = salvo.atualizadoEm || null;
+} catch {}
 
+// Gravação com debounce e escrita atômica (tmp + rename): não corrompe o arquivo se o processo cair.
+let timerSalvar = null;
+const salvarAgora = () => {
+  clearTimeout(timerSalvar); timerSalvar = null;
+  const tmp = arqPlano + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify({ atualizadoEm: estado.atualizadoEm, boletos: estado.boletos }, null, 2));
+  fs.renameSync(tmp, arqPlano);
+};
+const mudou = (persistir = true) => {
+  estado.versao++;
+  if (!persistir) return;
+  estado.atualizadoEm = new Date().toISOString();
+  if (!timerSalvar) timerSalvar = setTimeout(() => { try { salvarAgora(); } catch (e) { console.error('Falha ao salvar:', e.message); } }, 400);
+};
+for (const sinal of ['SIGINT', 'SIGTERM']) process.on(sinal, () => { try { if (timerSalvar) salvarAgora(); } finally { process.exit(0); } });
+
+// ---------- Via Imob ----------
 let viaCtx = null;
 
 async function abrirVia() {
-  if (viaCtx) { try { await viaCtx.pages()[0]?.bringToFront(); estado.via.aberto = true; return; } catch { viaCtx = null; } }
+  if (viaCtx) { try { await viaCtx.pages()[0]?.bringToFront(); estado.via.aberto = true; mudou(false); return; } catch { viaCtx = null; } }
   viaCtx = await chromium.launchPersistentContext(path.join(raiz, 'perfil-via'), {
     executablePath: cfg.chrome, headless: false, ignoreHTTPSErrors: true, viewport: cfg.viewportViaImob || null
   });
-  viaCtx.on('close', () => { viaCtx = null; estado.via.aberto = false; });
+  viaCtx.on('close', () => { viaCtx = null; estado.via.aberto = false; mudou(false); });
   const p = viaCtx.pages()[0] || await viaCtx.newPage();
   await p.goto(cfg.urlViaImob).catch(() => {});
-  estado.via.aberto = true;
+  estado.via.aberto = true; mudou(false);
 }
 
 // A aba "certa" é a que o usuário deixou visível/em foco no navegador do Via Imob.
@@ -51,59 +82,157 @@ async function lancar(i) {
   if (!b) throw new Error('Boleto inexistente');
   if (b.problemas?.length) throw new Error('Boleto com problemas: ' + b.problemas.join('; '));
   if (estado.lancando !== null) throw new Error('Já existe um lançamento em andamento');
-  const page = await abaAtiva();
-  estado.lancando = i; b.status = 'lancando'; delete b.erroLancamento;
+  estado.lancando = i;
   try {
+    const page = await abaAtiva();
+    b.status = 'lancando'; delete b.erroLancamento; mudou();
     await page.evaluate(gerarScript(b));
     b.status = 'lancado'; // preenchido; a gravação continua manual no Via Imob
   } catch (e) {
-    b.status = 'erro'; b.erroLancamento = e.message.split('\n')[0];
-  } finally { estado.lancando = null; salvar(); }
+    b.status = 'erro'; b.erroLancamento = String(e.message).split('\n')[0];
+  } finally { estado.lancando = null; mudou(); }
 }
 
-const json = (res, obj, code = 200) => { res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); };
-const corpo = req => new Promise(r => { let d = ''; req.on('data', c => d += c); req.on('end', () => { try { r(JSON.parse(d || '{}')); } catch { r({}); } }); });
+// ---------- Extração ----------
+let ctrl = null;
+function iniciarExtracao(texto) {
+  if (estado.extracao.rodando) throw Object.assign(new Error('Extração já em andamento'), { code: 409 });
+  const links = separarLinks(texto);
+  if (!links.length) throw Object.assign(new Error('Nenhum link encontrado'), { code: 400 });
+  ctrl = { pausado: false, parado: false };
+  const c = ctrl;
+  estado.extracao = { rodando: true, pausado: false, total: links.length, feitos: 0, erro: null };
+  mudou(false);
+  extrair(links, cfg, (_, b) => { b.extraidoEm = new Date().toISOString(); estado.boletos.push(b); estado.extracao.feitos++; mudou(); }, c)
+    .catch(e => { if (!c.parado) estado.extracao.erro = String(e.message).split('\n')[0]; })
+    .finally(() => { estado.extracao.rodando = false; estado.extracao.pausado = false; if (ctrl === c) ctrl = null; mudou(false); });
+  return links.length;
+}
 
-http.createServer(async (req, res) => {
+// ---------- HTTP ----------
+const TOKEN = crypto.randomBytes(24).toString('hex');
+const hostsOk = new Set([`localhost:${porta}`, `127.0.0.1:${porta}`]);
+const origensOk = new Set([...hostsOk].map(h => 'http://' + h));
+const STATUS_MANUAIS = new Set(['pendente', 'lancado', 'gravado']);
+const LIMITE_CORPO = 2 * 1024 * 1024;
+
+const SEGURANCA = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer',
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Resource-Policy': 'same-origin',
+  'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+};
+
+// Arquivos estáticos carregados em memória na inicialização (whitelist — sem path traversal).
+const TIPOS = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
+const estaticos = new Map();
+for (const nome of ['index.html', 'app.css', 'app.js', 'logo.svg']) {
+  let conteudo = fs.readFileSync(path.join(raiz, 'public', nome), 'utf8');
+  if (nome === 'index.html') conteudo = conteudo.replace('__TOKEN__', TOKEN);
+  estaticos.set(nome === 'index.html' ? '/' : '/' + nome, { tipo: TIPOS[path.extname(nome)], corpo: Buffer.from(conteudo) });
+}
+
+const responder = (res, code, corpo, tipo, extra = {}) => {
+  res.writeHead(code, { ...SEGURANCA, 'Cache-Control': 'no-store', ...(tipo && { 'Content-Type': tipo }), ...extra });
+  res.end(corpo);
+};
+const json = (res, obj, code = 200) => responder(res, code, JSON.stringify(obj), 'application/json; charset=utf-8');
+
+const lerCorpo = req => new Promise((ok, falha) => {
+  if (!/^application\/json\b/i.test(req.headers['content-type'] || '')) return falha(Object.assign(new Error('Content-Type inválido'), { code: 415 }));
+  let tam = 0; const partes = [];
+  req.on('data', c => {
+    tam += c.length;
+    if (tam > LIMITE_CORPO) { falha(Object.assign(new Error('Corpo muito grande'), { code: 413 })); req.destroy(); return; }
+    partes.push(c);
+  });
+  req.on('end', () => { try { const o = JSON.parse(Buffer.concat(partes).toString('utf8') || '{}'); ok(o && typeof o === 'object' ? o : {}); } catch { falha(Object.assign(new Error('JSON inválido'), { code: 400 })); } });
+  req.on('error', falha);
+});
+const indiceValido = i => Number.isInteger(i) && i >= 0 && i < estado.boletos.length;
+const tokenOk = req => {
+  const t = String(req.headers['x-token'] || '');
+  return t.length === TOKEN.length && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(TOKEN));
+};
+
+const rotas = {
+  'POST /api/extrair': async b => ({ ok: true, total: iniciarExtracao(String(b.texto ?? '')) }),
+  'POST /api/extracao/pausar': async () => {
+    if (!ctrl) throw Object.assign(new Error('Nenhuma extração em andamento'), { code: 409 });
+    ctrl.pausado = !ctrl.pausado; estado.extracao.pausado = ctrl.pausado; mudou(false);
+    return { ok: true, pausado: ctrl.pausado };
+  },
+  'POST /api/extracao/parar': async () => {
+    if (!ctrl) throw Object.assign(new Error('Nenhuma extração em andamento'), { code: 409 });
+    ctrl.parado = true; ctrl.pausado = false;
+    await ctrl.browser?.close().catch(() => {});
+    return { ok: true };
+  },
+  'POST /api/limpar': async () => {
+    if (estado.extracao.rodando) throw Object.assign(new Error('Extração em andamento'), { code: 409 });
+    if (estado.lancando !== null) throw Object.assign(new Error('Lançamento em andamento'), { code: 409 });
+    estado.boletos = []; mudou(); return { ok: true };
+  },
+  'POST /api/via/abrir': async () => { await abrirVia(); return { ok: true }; },
+  'POST /api/lancar': async ({ indice }) => {
+    if (!indiceValido(indice)) throw Object.assign(new Error('Índice inválido'), { code: 400 });
+    await lancar(indice);
+    const b = estado.boletos[indice];
+    if (b.status === 'erro') throw Object.assign(new Error(b.erroLancamento || 'Falha no lançamento'), { code: 400 });
+    return { ok: true };
+  },
+  'POST /api/status': async ({ indice, status }) => {
+    if (!indiceValido(indice) || !STATUS_MANUAIS.has(status)) throw Object.assign(new Error('Parâmetros inválidos'), { code: 400 });
+    if (estado.lancando === indice) throw Object.assign(new Error('Boleto em lançamento'), { code: 409 });
+    estado.boletos[indice].status = status; mudou(); return { ok: true };
+  }
+};
+
+const servidor = http.createServer(async (req, res) => {
   try {
-    if (req.method === 'GET' && req.url === '/') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      return res.end(fs.readFileSync(path.join(raiz, 'public', 'index.html')));
-    }
-    if (req.url === '/favicon.ico') { res.writeHead(204); return res.end(); }
-    if (req.method === 'GET' && req.url === '/api/estado') return json(res, estado);
+    // Bloqueia DNS rebinding: só aceita Host local exato.
+    if (!hostsOk.has(String(req.headers.host || '').toLowerCase())) return responder(res, 421, 'Host não permitido', 'text/plain; charset=utf-8');
+    const url = new URL(req.url, 'http://localhost');
 
-    if (req.method === 'POST' && req.url === '/api/extrair') {
-      if (estado.extracao.rodando) return json(res, { erro: 'Extração já em andamento' }, 409);
-      const { texto } = await corpo(req);
-      const links = separarLinks(texto || '');
-      if (!links.length) return json(res, { erro: 'Nenhum link encontrado' }, 400);
-      const base = estado.boletos.length;
-      estado.extracao = { rodando: true, total: links.length, feitos: 0 };
-      extrair(links, cfg, (i, b) => { estado.boletos.push(b); estado.extracao.feitos++; salvar(); })
-        .catch(e => estado.extracao.erro = e.message)
-        .finally(() => { estado.extracao.rodando = false; });
-      return json(res, { ok: true, total: links.length, base });
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      const arq = estaticos.get(url.pathname);
+      if (arq) return responder(res, 200, req.method === 'HEAD' ? undefined : arq.corpo, arq.tipo);
+      if (url.pathname === '/favicon.ico') return responder(res, 204);
+      if (url.pathname === '/api/estado') {
+        if (!tokenOk(req)) return json(res, { erro: 'Não autorizado' }, 403);
+        // Polling barato: sem mudança desde a versão do cliente → 204 sem corpo.
+        if (url.searchParams.get('v') === String(estado.versao)) return responder(res, 204);
+        return json(res, estado);
+      }
+      return json(res, { erro: 'não encontrado' }, 404);
     }
-    if (req.method === 'POST' && req.url === '/api/limpar') {
-      if (estado.extracao.rodando) return json(res, { erro: 'Extração em andamento' }, 409);
-      estado.boletos = []; salvar(); return json(res, { ok: true });
+
+    if (req.method === 'POST') {
+      // CSRF: exige origem local + token de sessão.
+      const origem = req.headers.origin;
+      if ((origem && !origensOk.has(origem)) || !tokenOk(req)) return json(res, { erro: 'Não autorizado' }, 403);
+      const rota = rotas['POST ' + url.pathname];
+      if (!rota) return json(res, { erro: 'não encontrado' }, 404);
+      const corpo = await lerCorpo(req);
+      return json(res, await rota(corpo));
     }
-    if (req.method === 'POST' && req.url === '/api/via/abrir') { await abrirVia(); return json(res, { ok: true }); }
-    if (req.method === 'POST' && req.url === '/api/lancar') {
-      const { indice } = await corpo(req);
-      try { await lancar(indice); return json(res, { ok: true }); }
-      catch (e) { return json(res, { erro: e.message }, 400); }
-    }
-    if (req.method === 'POST' && req.url === '/api/status') {
-      const { indice, status } = await corpo(req);
-      if (estado.boletos[indice]) { estado.boletos[indice].status = status; salvar(); }
-      return json(res, { ok: true });
-    }
-    json(res, { erro: 'não encontrado' }, 404);
-  } catch (e) { json(res, { erro: e.message }, 500); }
-}).listen(cfg.porta, '127.0.0.1', () => {
-  const url = `http://localhost:${cfg.porta}`;
+    responder(res, 405, undefined, undefined, { Allow: 'GET, HEAD, POST' });
+  } catch (e) {
+    const code = Number.isInteger(e.code) ? e.code : 500;
+    if (code === 500) console.error(e);
+    if (!res.headersSent) json(res, { erro: code === 500 ? 'Erro interno: ' + String(e.message).split('\n')[0] : e.message }, code);
+  }
+});
+servidor.headersTimeout = 15000;
+servidor.requestTimeout = 120000;
+servidor.listen(porta, '127.0.0.1', () => {
+  const url = `http://localhost:${porta}`;
   console.log('Interface em ' + url);
-  exec(`start "" "${url}"`);
+  if (process.env.LB_SEM_NAVEGADOR) return;
+  // spawn com argumentos separados (sem interpolação em shell).
+  const [cmd, args] = process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', url]]
+    : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+  try { spawn(cmd, args, { stdio: 'ignore', detached: true, windowsVerbatimArguments: process.platform === 'win32' }).on('error', () => {}).unref(); } catch {}
 });

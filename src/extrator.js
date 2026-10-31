@@ -5,25 +5,54 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const raiz = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// Lidos uma única vez (evita I/O por boleto).
 const pagina = fs.readFileSync(path.join(raiz, 'src', 'pagina.js'), 'utf8');
+const modelo = fs.readFileSync(path.join(raiz, 'src', 'lancamento.modelo.js'), 'utf8');
 
-export const separarLinks = texto =>
-  [...new Set(texto.split('\n').filter(l => !l.trim().startsWith('#')).join('\n').match(/https?:\/\/[^\s"'<>]+/g) || [])];
+export const MAX_LINKS = 1000;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const primeiraLinha = e => String(e?.message || e).split('\n')[0].slice(0, 300);
 
-export async function extrair(links, cfg, onItem) {
-  const nomeDe = item => {
-    for (const m of cfg.mapaOcorrencias) if (new RegExp(m.regex, 'i').test(item)) return m.nome;
-    return null;
-  };
+export const separarLinks = texto => {
+  const semComentarios = String(texto).split('\n').filter(l => !l.trim().startsWith('#')).join('\n');
+  const achados = semComentarios.match(/https?:\/\/[^\s"'<>]+/g) || [];
+  const validos = achados.filter(u => {
+    try { const p = new URL(u); return p.protocol === 'http:' || p.protocol === 'https:'; } catch { return false; }
+  });
+  return [...new Set(validos)].slice(0, MAX_LINKS);
+};
+
+// Compila as regex do config uma vez só.
+export const criarMapeador = mapa => {
+  const regras = (mapa || []).map(m => ({ re: new RegExp(m.regex, 'i'), nome: m.nome }));
+  return item => regras.find(r => r.re.test(item))?.nome ?? null;
+};
+
+/**
+ * @param {string[]} links
+ * @param {object} cfg
+ * @param {(i:number, boleto:object) => void} onItem
+ * @param {{pausado:boolean, parado:boolean, browser?:any}} ctrl  controle de pausa/parada
+ */
+export async function extrair(links, cfg, onItem, ctrl = { pausado: false, parado: false }) {
+  const nomeDe = criarMapeador(cfg.mapaOcorrencias);
   const browser = await chromium.launch({ executablePath: cfg.chrome, headless: true });
-  const ctx = await browser.newContext({ ignoreHTTPSErrors: true });
+  ctrl.browser = browser;
+  const ctx = await browser.newContext({ ignoreHTTPSErrors: true, acceptDownloads: false, serviceWorkers: 'block' });
+  // Não baixa imagens/fontes/mídia: só o HTML importa.
+  await ctx.route('**/*', r => ['image', 'font', 'media'].includes(r.request().resourceType()) ? r.abort() : r.continue());
   const fila = [...links.entries()];
 
   const trabalhador = async () => {
-    while (fila.length) {
-      const [i, url] = fila.shift();
-      const page = await ctx.newPage();
+    while (fila.length && !ctrl.parado) {
+      while (ctrl.pausado && !ctrl.parado) await sleep(300);
+      if (ctrl.parado) break;
+      const item = fila.shift();
+      if (!item) break;
+      const [i, url] = item;
+      let page;
       try {
+        page = await ctx.newPage();
         await page.goto(url, { waitUntil: 'load', timeout: 45000 });
         await page.waitForSelector('td.coluna-item-boleto', { timeout: 15000 });
         await page.waitForTimeout(cfg.esperaMs);
@@ -43,21 +72,31 @@ export async function extrair(links, cfg, onItem) {
         if (!d.linhaDigitavel) problemas.push('Linha digitável não encontrada');
         ocorrencias.filter(o => !o.nome).forEach(o => problemas.push(`Sem mapeamento: "${o.itemOriginal}" (config.json)`));
 
-        onItem(i, { link: url, condominio: d.condominio, unidade: d.unidade, codIdentificador: d.codIdentificador,
+        if (ctrl.parado) break;
+        onItem(i, { link: url, condominio: d.condominio, unidade: d.unidade, proprietario: d.proprietario,
+          documento: d.documento, vencimento: d.vencimento, codIdentificador: d.codIdentificador,
           linhaDigitavel: d.linhaDigitavel, desconto: d.desconto, valorTotal: d.conferencia.valorDocumento,
           ocorrencias, conferencia: d.conferencia, problemas, status: 'pendente' });
       } catch (e) {
-        onItem(i, { link: url, erroExtracao: e.message.split('\n')[0], problemas: ['Falha na extração: ' + e.message.split('\n')[0]], ocorrencias: [], status: 'erro' });
-      } finally { await page.close(); }
+        if (ctrl.parado) break;
+        const msg = primeiraLinha(e);
+        onItem(i, { link: url, erroExtracao: msg, problemas: ['Falha na extração: ' + msg], ocorrencias: [], status: 'erro' });
+      } finally { await page?.close().catch(() => {}); }
     }
   };
-  try { await Promise.all(Array.from({ length: cfg.concorrenciaExtracao || 3 }, trabalhador)); }
-  finally { await browser.close(); }
+  try {
+    const n = Math.min(Math.max(1, cfg.concorrenciaExtracao | 0 || 3), 8, links.length);
+    await Promise.all(Array.from({ length: n }, trabalhador));
+  } finally {
+    ctrl.browser = null;
+    await browser.close().catch(() => {});
+  }
 }
 
 export const gerarScript = b => {
-  const modelo = fs.readFileSync(path.join(raiz, 'src', 'lancamento.modelo.js'), 'utf8');
   const data = { codIdentificador: b.codIdentificador, linhaDigitavel: b.linhaDigitavel,
     ocorrencias: b.ocorrencias.map(({ nome, valor, historico }) => ({ nome, valor, historico })) };
-  return modelo.replace('/*__DADOS__*/', () => JSON.stringify(data, null, 2));
+  // JSON escapado: impede que "</script>" ou separadores de linha quebrem o script injetado.
+  const literal = JSON.stringify(data, null, 2).replace(/[<\u2028\u2029]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+  return modelo.replace('/*__DADOS__*/', () => literal);
 };
