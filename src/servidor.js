@@ -154,6 +154,7 @@ async function lancar(i) {
     b.status = 'lancando'; delete b.erroLancamento; mudou();
     await page.evaluate(gerarScript(b));
     b.status = 'lancado'; // preenchido; a gravação continua manual no Via Imob
+    b.lancadoEm = new Date().toISOString();
   } catch (e) {
     b.status = 'erro'; b.erroLancamento = String(e.message).split('\n')[0];
   } finally { estado.lancando = null; mudou(); }
@@ -253,7 +254,11 @@ const rotas = {
   'POST /api/status': async ({ indice, status }) => {
     if (!indiceValido(indice) || !STATUS_MANUAIS.has(status)) throw Object.assign(new Error('Parâmetros inválidos'), { code: 400 });
     if (estado.lancando === indice) throw Object.assign(new Error('Boleto em lançamento'), { code: 409 });
-    estado.boletos[indice].status = status; mudou(); return { ok: true };
+    const b = estado.boletos[indice];
+    b.status = status;
+    if (status === 'gravado') b.gravadoEm = new Date().toISOString();
+    else delete b.gravadoEm;
+    mudou(); return { ok: true };
   }
 };
 

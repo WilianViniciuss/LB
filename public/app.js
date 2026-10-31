@@ -6,7 +6,11 @@
   const MAX_ARQ = 2 * 1024 * 1024;
 
   let E = { versao: -1, boletos: [], extracao: {}, via: {}, lancando: null, app: {}, config: {} };
-  let filtro = 'todos';
+  // Filtros por tabela (o do histórico é lembrado entre aberturas).
+  const FILTRO_PADRAO = { busca: '', status: 'todos', cond: '', dataTipo: 'lancadoEm', de: '', ate: '', min: '', max: '', ordem: null, dir: 1 };
+  const F = { dash: { ...FILTRO_PADRAO, ordem: null }, hist: { ...FILTRO_PADRAO, ordem: 'idx', dir: -1 } };
+  try { Object.assign(F.hist, JSON.parse(localStorage.getItem('filtroHist') || '{}'), { busca: '' }); } catch {}
+  const lembrar = () => { try { const { busca, ...resto } = F.hist; localStorage.setItem('filtroHist', JSON.stringify(resto)); } catch {} };
   const abertos = new Set(); // linhas expandidas (por link)
 
   // ---------- Utilidades ----------
@@ -125,11 +129,52 @@
   $('bLimparLista').onclick = async () => {
     if (confirm('Apagar a lista de boletos? Esta ação não pode ser desfeita.')) { abertos.clear(); await api('/api/limpar'); }
   };
+  // ---------- Busca / filtros ----------
+  const debounce = (fn, ms = 150) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+  const renderTabelas = () => { renderDashboard(); renderHistorico(); };
+  const renderAdiado = debounce(renderTabelas);
+  // O valor é gravado no ato do evento; só a renderização é adiada (evita perder a escolha).
+  const ligar = (id, tabela, chave, ev = 'input') => $(id).addEventListener(ev, e => {
+    F[tabela][chave] = e.target.value; if (tabela === 'hist') lembrar(); renderAdiado();
+  });
+  ligar('dBusca', 'dash', 'busca'); ligar('dStatus', 'dash', 'status', 'change');
+  ligar('hBusca', 'hist', 'busca'); ligar('hCond', 'hist', 'cond', 'change'); ligar('hDataTipo', 'hist', 'dataTipo', 'change');
+  ligar('hDe', 'hist', 'de', 'change'); ligar('hAte', 'hist', 'ate', 'change'); ligar('hMin', 'hist', 'min'); ligar('hMax', 'hist', 'max');
+  const sincronizarCampos = () => {
+    const h = F.hist;
+    $('hBusca').value = h.busca; $('hDataTipo').value = h.dataTipo; $('hDe').value = h.de; $('hAte').value = h.ate;
+    $('hMin').value = h.min; $('hMax').value = h.max;
+    $('filtros').querySelectorAll('button').forEach(x => x.classList.toggle('ativo', x.dataset.f === h.status));
+  };
+  $('hLimpar').onclick = () => { Object.assign(F.hist, FILTRO_PADRAO, { ordem: 'idx', dir: -1 }); $('hCond').value = ''; lembrar(); sincronizarCampos(); renderTabelas(); };
   $('filtros').onclick = e => {
     const b = e.target.closest('button[data-f]'); if (!b) return;
-    filtro = b.dataset.f;
-    $('filtros').querySelectorAll('button').forEach(x => x.classList.toggle('ativo', x === b));
-    renderHistorico();
+    F.hist.status = b.dataset.f; lembrar(); sincronizarCampos(); renderHistorico();
+  };
+  const ordenarPor = (tabela, thead) => $(thead).addEventListener('click', e => {
+    const th = e.target.closest('th[data-sort]'); if (!th) return;
+    const f = F[tabela];
+    if (f.ordem === th.dataset.sort) f.dir = -f.dir; else { f.ordem = th.dataset.sort; f.dir = 1; }
+    if (tabela === 'hist') lembrar();
+    renderTabelas();
+  });
+  ordenarPor('dash', 'thDash'); ordenarPor('hist', 'thHist');
+
+  $('bCsv').onclick = () => {
+    const linhas = filtrar(E.boletos, F.hist);
+    if (!linhas.length) return toast('Nada para exportar', 'erro');
+    const cel = v => { let t = String(v ?? ''); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"'; };
+    const cab = ['#', 'Código', 'Condomínio', 'Unidade', 'Vencimento', 'Valor', 'Status', 'Extraído em', 'Lançado em', 'Gravado em', 'Ocorrências', 'Problemas', 'Link'];
+    const corpo = linhas.map(([b, i]) => [i + 1, b.codIdentificador, b.condominio, b.unidade, b.vencimento, b.conferencia?.valorDocumento,
+      ROTULO[statusDe(b)] || statusDe(b), dataHora(b.extraidoEm), dataHora(b.lancadoEm), dataHora(b.gravadoEm),
+      (b.ocorrencias || []).map(o => `${o.nome || o.itemOriginal}: ${o.valor}${o.historico ? ' (' + o.historico + ')' : ''}`).join(' | '),
+      (b.problemas || []).join(' | '), b.link].map(cel).join(';'));
+    const blob = new Blob(['\ufeff' + [cab.map(cel).join(';'), ...corpo].join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `boletos-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
 
   async function lancar(i) {
@@ -182,6 +227,7 @@
       b.desconto && `<li>Desconto: ${esc(b.desconto.join(' | '))}</li>`,
       b.conferencia && `<li>Conferência: soma ${esc(b.conferencia.somaCalc)} · recibo ${esc(b.conferencia.totalRecibo)} · documento ${esc(b.conferencia.valorDocumento)} · linha ${esc(b.conferencia.valorLinha)}</li>`,
       ...(b.problemas || []).map(p => `<li class="prob">${esc(p)}</li>`),
+      `<li>Extraído: ${esc(dataHora(b.extraidoEm))} · Lançado: ${esc(dataHora(b.lancadoEm))} · Gravado: ${esc(dataHora(b.gravadoEm))}</li>`,
       `<li>Link: <span class="sub2">${esc(b.link)}</span></li>`
     ].filter(Boolean).join('');
     return `<tr class="det"><td colspan="${colunas}"><ul>${itens}</ul></td></tr>`;
@@ -190,9 +236,47 @@
   const linhaVazia = (colunas, titulo, texto) =>
     `<tr class="vazio"><td colspan="${colunas}">${ico('i-empty')}<strong>${titulo}</strong>${texto}</td></tr>`;
 
+  // ---------- Filtragem ----------
+  const numBR = v => { const n = parseFloat(String(v ?? '').trim().replace(/\./g, '').replace(',', '.')); return isNaN(n) ? null : n; };
+  const valorDe = b => numBR(b.conferencia?.valorDocumento ?? b.valorTotal);
+  const pad = n => String(n).padStart(2, '0');
+  const diaISO = iso => { const d = new Date(iso); return iso && !isNaN(d) ? `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` : null; };
+  const diaBR = s => { const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s || ''); return m ? `${m[3]}-${m[2]}-${m[1]}` : null; };
+  const dataCampo = (b, campo) => campo === 'vencimento' ? diaBR(b.vencimento) : diaISO(b[campo]);
+  const norm = s => String(s ?? '').normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+  const textoBusca = b => norm([b.condominio, b.unidade, b.codIdentificador, b.linhaDigitavel, b.vencimento, b.conferencia?.valorDocumento, b.link,
+    ...(b.ocorrencias || []).flatMap(o => [o.nome, o.itemOriginal, o.historico])].join(' '));
+  const ORDEM = {
+    idx: (b, i) => i, cod: b => norm(b.codIdentificador), cond: b => norm(b.condominio) + ' ' + norm(b.unidade), unid: b => norm(b.unidade),
+    venc: b => diaBR(b.vencimento) || '', valor: b => valorDe(b) ?? -1, lanc: b => b.lancadoEm || '', status: b => statusDe(b)
+  };
+  function filtrar(lista, f) {
+    const termos = norm(f.busca).split(/\s+/).filter(Boolean);
+    const min = numBR(f.min), max = numBR(f.max);
+    const linhas = lista.map((b, i) => [b, i]).filter(([b]) => {
+      if (f.status === 'problema' ? !temProblema(b) : f.status !== 'todos' && (temProblema(b) || b.status !== f.status)) return false;
+      if (f.cond && b.condominio !== f.cond) return false;
+      if (termos.length) { const t = textoBusca(b); if (!termos.every(x => t.includes(x))) return false; }
+      if (f.de || f.ate) { const d = dataCampo(b, f.dataTipo); if (!d || (f.de && d < f.de) || (f.ate && d > f.ate)) return false; }
+      if (min !== null || max !== null) { const v = valorDe(b); if (v === null || (min !== null && v < min) || (max !== null && v > max)) return false; }
+      return true;
+    });
+    if (f.ordem && ORDEM[f.ordem]) {
+      const k = ORDEM[f.ordem];
+      linhas.sort(([a, ia], [b, ib]) => { const x = k(a, ia), y = k(b, ib); return (x < y ? -1 : x > y ? 1 : ia - ib) * f.dir; });
+    }
+    return linhas;
+  }
+  const marcarOrdem = (thead, f) => $(thead).querySelectorAll('th[data-sort]').forEach(th =>
+    th.setAttribute('aria-sort', th.dataset.sort === f.ordem ? (f.dir > 0 ? 'ascending' : 'descending') : 'none'));
+  const somaBRL = linhas => linhas.reduce((s, [b]) => s + (valorDe(b) || 0), 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const filtroAtivo = f => f.busca || f.status !== 'todos' || f.cond || f.de || f.ate || f.min || f.max;
+
   function renderDashboard() {
-    const bs = E.boletos;
-    $('tb').innerHTML = bs.map((b, i) => {
+    const linhas = filtrar(E.boletos, F.dash);
+    marcarOrdem('thDash', F.dash);
+    $('dResultado').innerHTML = filtroAtivo(F.dash) ? `<b>${linhas.length}</b> de ${E.boletos.length}` : '';
+    $('tb').innerHTML = linhas.map(([b, i]) => {
       const aberto = abertos.has(b.link);
       return `<tr class="linha">
         <td><button type="button" class="expandir" data-acao="det" data-i="${i}" aria-expanded="${aberto}" aria-label="Detalhes">${ico('i-chev')}</button>${esc(b.condominio || '—')}</td>
@@ -202,12 +286,22 @@
         <td class="num">${b.conferencia ? 'R$ ' + esc(b.conferencia.valorDocumento) : '—'}</td>
         <td>${tagStatus(b)}</td>
         <td class="acoes">${botoesAcao(b, i)}</td></tr>${aberto ? detalhe(b, 7) : ''}`;
-    }).join('') || linhaVazia(7, 'Nenhum dado extraído ainda.', 'Adicione os links ou o arquivo e clique em "Iniciar Extração".');
+    }).join('') || (E.boletos.length ? linhaVazia(7, 'Nenhum boleto corresponde à busca.', '')
+      : linhaVazia(7, 'Nenhum dado extraído ainda.', 'Adicione os links ou o arquivo e clique em "Iniciar Extração".'));
   }
 
   function renderHistorico() {
-    const ok = b => filtro === 'todos' ? true : filtro === 'problema' ? temProblema(b) : !temProblema(b) && b.status === filtro;
-    const linhas = E.boletos.map((b, i) => [b, i]).filter(([b]) => ok(b));
+    // Lista de condomínios para o seletor (mantém a escolha atual).
+    const conds = [...new Set(E.boletos.map(b => b.condominio).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    const chaveConds = conds.join('\n');
+    if ($('hCond').dataset.k !== chaveConds) {
+      $('hCond').dataset.k = chaveConds;
+      $('hCond').innerHTML = '<option value="">Todos</option>' + conds.map(c => `<option>${esc(c)}</option>`).join('');
+    }
+    $('hCond').value = conds.includes(F.hist.cond) ? F.hist.cond : '';
+    const linhas = filtrar(E.boletos, F.hist);
+    marcarOrdem('thHist', F.hist);
+    $('hResultado').innerHTML = `<b>${linhas.length}</b> de ${plural(E.boletos.length, 'boleto', 'boletos')} · soma <b>${somaBRL(linhas)}</b>`;
     $('tbHist').innerHTML = linhas.map(([b, i]) => {
       const aberto = abertos.has(b.link);
       return `<tr class="linha">
@@ -215,10 +309,12 @@
         <td class="num">${esc(b.codIdentificador || '—')}</td>
         <td>${esc(b.condominio || '—')}<div class="sub2">${esc(b.unidade || '')}</div></td>
         <td class="sub2">${ocorrenciasHtml(b)}${b.desconto ? '<br><b>Desconto:</b> ' + esc(b.desconto.join(' | ')) : ''}</td>
+        <td class="num">${esc(b.vencimento || '—')}</td>
         <td class="num">${b.conferencia ? 'R$ ' + esc(b.conferencia.valorDocumento) : '—'}</td>
+        <td class="num sub2">${b.lancadoEm ? esc(dataHora(b.lancadoEm)) : '—'}${b.gravadoEm ? '<br>Gravado ' + esc(dataHora(b.gravadoEm)) : ''}</td>
         <td>${tagStatus(b)}${temProblema(b) ? `<div class="prob">${b.problemas.map(esc).join('<br>')}</div>` : ''}</td>
-        <td class="acoes">${botoesAcao(b, i)}</td></tr>${aberto ? detalhe(b, 7) : ''}`;
-    }).join('') || linhaVazia(7, 'Nenhum boleto encontrado.', '');
+        <td class="acoes">${botoesAcao(b, i)}</td></tr>${aberto ? detalhe(b, 9) : ''}`;
+    }).join('') || linhaVazia(9, 'Nenhum boleto encontrado.', filtroAtivo(F.hist) ? 'Ajuste ou limpe os filtros.' : '');
   }
 
   function renderConfig() {
@@ -298,6 +394,7 @@
     agendar(document.hidden ? 5000 : ativo ? 700 : 1500);
   }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) agendar(0); });
+  sincronizarCampos();
   atualizarContador();
   tick();
 })();

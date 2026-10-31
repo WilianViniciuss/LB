@@ -36,6 +36,8 @@
   <symbol id="i-sun" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></g></symbol>
   <symbol id="i-moon" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5a8.5 8.5 0 1 0 11 11"/></symbol>
   <symbol id="i-bolt" viewBox="0 0 24 24"><path fill="currentColor" d="M13.5 2 4 14h7l-1.5 8L19 10h-7z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></g></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></g></symbol>
   <symbol id="i-chev" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m9 6 6 6-6 6"/></symbol>
 </svg>
 
@@ -101,15 +103,22 @@
         </div>
         <div id="progWrap" class="prog" hidden><div id="progBar"></div></div>
         <div id="resumo" class="resumo"></div>
+        <div class="busca-barra compacta">
+          <label class="campo busca"><svg><use href="#i-search"/></svg><input id="dBusca" type="search" placeholder="Buscar condomínio, unidade, código…" aria-label="Buscar"></label>
+          <label class="campo"><span>Status</span><select id="dStatus">
+            <option value="todos">Todos</option><option value="pendente">Pendentes</option><option value="lancado">Preenchidos</option>
+            <option value="gravado">Gravados</option><option value="problema">Com problema</option></select></label>
+          <span id="dResultado" class="resultado"></span>
+        </div>
         <div class="tabela-wrap">
           <table class="tabela">
-            <thead><tr>
-              <th><svg><use href="#i-build"/></svg>Condomínio</th>
-              <th><svg><use href="#i-home"/></svg>Unidade</th>
-              <th><svg><use href="#i-doc"/></svg>Cód. Identificador</th>
-              <th><svg><use href="#i-cal"/></svg>Vencimento</th>
-              <th><svg><use href="#i-money"/></svg>Valor</th>
-              <th><svg><use href="#i-chart"/></svg>Status</th>
+            <thead id="thDash"><tr>
+              <th data-sort="cond"><svg><use href="#i-build"/></svg>Condomínio</th>
+              <th data-sort="unid"><svg><use href="#i-home"/></svg>Unidade</th>
+              <th data-sort="cod"><svg><use href="#i-doc"/></svg>Cód. Identificador</th>
+              <th data-sort="venc"><svg><use href="#i-cal"/></svg>Vencimento</th>
+              <th data-sort="valor"><svg><use href="#i-money"/></svg>Valor</th>
+              <th data-sort="status"><svg><use href="#i-chart"/></svg>Status</th>
               <th class="acoes-th"><span class="sr">Ações</span></th>
             </tr></thead>
             <tbody id="tb"></tbody>
@@ -133,7 +142,22 @@
         <div class="card-h">
           <span class="ico azul"><svg><use href="#i-hist"/></svg></span>
           <div><h2>Histórico de Boletos</h2><p>Todos os boletos extraídos e o status de lançamento.</p></div>
-          <div class="h-acoes"><button id="bLimparLista" class="btn-light perigo" type="button"><svg><use href="#i-trash"/></svg>Limpar lista</button></div>
+          <div class="h-acoes">
+            <button id="bCsv" class="btn-light" type="button"><svg><use href="#i-down"/></svg>Exportar CSV</button>
+            <button id="bLimparLista" class="btn-light perigo" type="button"><svg><use href="#i-trash"/></svg>Limpar lista</button>
+          </div>
+        </div>
+        <div class="busca-barra">
+          <label class="campo busca"><svg><use href="#i-search"/></svg><input id="hBusca" type="search" placeholder="Buscar condomínio, unidade, código, ocorrência…" aria-label="Buscar"></label>
+          <label class="campo"><span>Condomínio</span><select id="hCond"><option value="">Todos</option></select></label>
+          <label class="campo"><span>Filtrar data por</span><select id="hDataTipo">
+            <option value="lancadoEm">Lançamento</option><option value="gravadoEm">Gravação</option>
+            <option value="extraidoEm">Extração</option><option value="vencimento">Vencimento</option></select></label>
+          <label class="campo"><span>De</span><input id="hDe" type="date"></label>
+          <label class="campo"><span>Até</span><input id="hAte" type="date"></label>
+          <label class="campo curto"><span>Valor mín. (R$)</span><input id="hMin" inputmode="decimal" placeholder="0,00"></label>
+          <label class="campo curto"><span>Valor máx. (R$)</span><input id="hMax" inputmode="decimal" placeholder="0,00"></label>
+          <button id="hLimpar" class="btn-light" type="button">Limpar filtros</button>
         </div>
         <div class="filtros" id="filtros">
           <button type="button" data-f="todos" class="ativo">Todos</button>
@@ -142,9 +166,11 @@
           <button type="button" data-f="gravado">Gravados</button>
           <button type="button" data-f="problema">Com problema</button>
         </div>
+        <div id="hResultado" class="resultado"></div>
         <div class="tabela-wrap">
           <table class="tabela">
-            <thead><tr><th>#</th><th>Cód.</th><th>Condomínio / Unidade</th><th>Ocorrências</th><th>Valor</th><th>Status</th><th class="acoes-th"><span class="sr">Ações</span></th></tr></thead>
+            <thead id="thHist"><tr><th data-sort="idx">#</th><th data-sort="cod">Cód.</th><th data-sort="cond">Condomínio / Unidade</th><th>Ocorrências</th>
+              <th data-sort="venc">Vencimento</th><th data-sort="valor">Valor</th><th data-sort="lanc">Lançado em</th><th data-sort="status">Status</th><th class="acoes-th"><span class="sr">Ações</span></th></tr></thead>
             <tbody id="tbHist"></tbody>
           </table>
         </div>
