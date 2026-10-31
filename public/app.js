@@ -2,7 +2,7 @@
 (() => {
   const $ = id => document.getElementById(id);
   const TOKEN = document.querySelector('meta[name="token"]').content;
-  const ROTULO = { pendente: 'Pendente', lancando: 'Lançando…', lancado: 'Preenchido', gravado: 'Gravado', erro: 'Erro' };
+  const ROTULO = { pendente: 'Pronto', lancando: 'Lançando…', lancado: 'Lançado', gravado: 'Lançado', erro: 'Erro' };
   const MAX_ARQ = 2 * 1024 * 1024;
 
   let E = { versao: -1, boletos: [], extracao: {}, via: {}, lancando: null, app: {}, config: {} };
@@ -67,8 +67,9 @@
   // ---------- Navegação ----------
   const TITULOS = {
     dashboard: ['Dashboard', 'Gerencie a extração de dados e o lançamento dos boletos de forma simples e eficiente.'],
-    historico: ['Histórico', 'Acompanhe todos os boletos extraídos e lançados.'],
+    historico: ['Histórico', 'Boletos já lançados no Via Imob.'],
     condominios: ['Condomínios', 'Links vinculados a cada condomínio, prontos para reutilizar.'],
+    duplicidades: ['Duplicidades', 'Boletos ignorados na extração por já existirem no banco.'],
     configuracoes: ['Configurações', 'Parâmetros atuais do sistema.'],
     ajuda: ['Ajuda', 'Passo a passo para usar o sistema.']
   };
@@ -83,6 +84,7 @@
     $('subtitulo').textContent = TITULOS[v][1];
     if (v === 'historico') { sincronizarCampos?.(); recarregarHist?.(); }
     if (v === 'condominios') carregarCondominios?.();
+    if (v === 'duplicidades') carregarDup?.();
   }
   addEventListener('hashchange', rota);
 
@@ -133,10 +135,10 @@
     if (!b) return toast('Nenhum boleto pendente', 'erro');
     lancar(b.id);
   };
-  $('bArquivar').onclick = async () => {
-    if (!confirm('Arquivar o lote atual?\nOs boletos saem do Dashboard, mas continuam salvos no Histórico.')) return;
+  $('bLimparLista').onclick = async () => {
+    if (!confirm('Remover da lista os boletos ainda NÃO lançados?\nOs já lançados continuam no Histórico. Os links continuam salvos em Condomínios.')) return;
     const r = await api('/api/limpar');
-    if (r) toast(`${plural(r.arquivados, 'boleto arquivado', 'boletos arquivados')}. Veja no Histórico.`, 'ok');
+    if (r) toast(`${plural(r.removidos, 'boleto removido', 'boletos removidos')} da lista`, 'ok');
   };
   // ---------- Busca / filtros ----------
   const debounce = (fn, ms = 150) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
@@ -154,13 +156,8 @@
     const h = F.hist;
     $('hBusca').value = h.busca; $('hDataTipo').value = h.dataTipo; $('hDe').value = h.de; $('hAte').value = h.ate;
     $('hMin').value = h.min; $('hMax').value = h.max;
-    $('filtros').querySelectorAll('button').forEach(x => x.classList.toggle('ativo', x.dataset.f === h.status));
   };
   $('hLimpar').onclick = () => { Object.assign(F.hist, FILTRO_PADRAO, { ordem: 'idx', dir: -1 }); $('hCond').value = ''; lembrar(); sincronizarCampos(); recarregarHist(); };
-  $('filtros').onclick = e => {
-    const b = e.target.closest('button[data-f]'); if (!b) return;
-    F.hist.status = b.dataset.f; lembrar(); sincronizarCampos(); recarregarHist();
-  };
   $('hMais').onclick = () => { limiteHist += 200; recarregarHist(); };
   const ordenarPor = (tabela, thead) => $(thead).addEventListener('click', e => {
     const th = e.target.closest('th[data-sort]'); if (!th) return;
@@ -176,9 +173,9 @@
     const linhas = r.itens.map(b => [b, b.id - 1]);
     if (!linhas.length) return toast('Nada para exportar', 'erro');
     const cel = v => { let t = String(v ?? ''); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"'; };
-    const cab = ['#', 'Código', 'Condomínio', 'Unidade', 'Vencimento', 'Valor', 'Status', 'Extraído em', 'Lançado em', 'Gravado em', 'Ocorrências', 'Problemas', 'Link'];
+    const cab = ['#', 'Código', 'Condomínio', 'Unidade', 'Vencimento', 'Valor', 'Status', 'Extraído em', 'Lançado em', 'Ocorrências', 'Problemas', 'Link'];
     const corpo = linhas.map(([b, i]) => [i + 1, b.codIdentificador, b.condominio, b.unidade, b.vencimento, b.conferencia?.valorDocumento,
-      ROTULO[statusDe(b)] || statusDe(b), dataHora(b.extraidoEm), dataHora(b.lancadoEm), dataHora(b.gravadoEm),
+      ROTULO[statusDe(b)] || statusDe(b), dataHora(b.extraidoEm), dataHora(b.lancadoEm),
       (b.ocorrencias || []).map(o => `${o.nome || o.itemOriginal}: ${o.valor}${o.historico ? ' (' + o.historico + ')' : ''}`).join(' | '),
       (b.problemas || []).join(' | '), b.link].map(cel).join(';'));
     const blob = new Blob(['\ufeff' + [cab.map(cel).join(';'), ...corpo].join('\r\n')], { type: 'text/csv;charset=utf-8' });
@@ -195,18 +192,25 @@
     if (!b) return;
     if (!confirm(`Lançar ${b.codIdentificador} (${b.unidade || ''})?\nConfirme que a tela Manutenção encargo está na aba ativa.`)) return;
     const r = await api('/api/lancar', { id });
-    if (r) toast(`Boleto ${b.codIdentificador} preenchido. Confira e grave no Via Imob.`, 'ok');
+    if (r) toast(`Boleto ${b.codIdentificador} lançado e movido para o Histórico. Confira e grave no Via Imob.`, 'ok');
   }
 
   // Delegação de eventos nas tabelas (sem handlers inline → compatível com CSP).
-  const aoClicarTabela = e => {
+  const aoClicarTabela = async e => {
     const btn = e.target.closest('button[data-acao]'); if (!btn) return;
     const id = Number(btn.dataset.id);
     if (!acharBoleto(id)) return;
     switch (btn.dataset.acao) {
       case 'lancar': return lancar(id);
-      case 'gravado': return api('/api/status', { id, status: 'gravado' });
-      case 'pendente': return api('/api/status', { id, status: 'pendente' });
+      case 'excluir':
+        if (confirm('Excluir este boleto da lista? (ainda não foi lançado)')) api('/api/boletos/excluir', { id });
+        return;
+      case 'desfazer':
+        if (confirm('Desfazer o lançamento?\nUse só se o boleto NÃO foi gravado no Via Imob. Ele volta para a lista de lançamento.')) {
+          const r = await api('/api/desfazer', { id });
+          if (r) { toast('Lançamento desfeito: boleto voltou para a lista', 'ok'); recarregarHist(); }
+        }
+        return;
       case 'det':
         abertos.has(id) ? abertos.delete(id) : abertos.add(id);
         renderDashboard(); return renderHistorico();
@@ -219,12 +223,12 @@
   const podeLancar = () => E.lancando === null && E.via.aberto;
   function botoesAcao(b) {
     const i = b.id;
-    if (temProblema(b)) return '';
+    if (b.status === 'lancado' || b.status === 'gravado') return `<button type="button" class="mini" data-acao="desfazer" data-id="${i}">Desfazer</button>`;
+    if (b.status === 'lancando') return '';
+    const excluir = `<button type="button" class="mini" data-acao="excluir" data-id="${i}" title="Excluir da lista">Excluir</button>`;
+    if (temProblema(b)) return excluir;
     const dis = podeLancar() ? '' : ' disabled';
-    if (b.status === 'lancado') return `<button type="button" class="mini" data-acao="gravado" data-id="${i}">Marcar gravado</button><button type="button" class="mini" data-acao="lancar" data-id="${i}"${dis}>Refazer</button>`;
-    if (b.status === 'gravado') return `<button type="button" class="mini" data-acao="pendente" data-id="${i}">Reabrir</button>`;
-    if (b.status === 'pendente' || b.status === 'erro') return `<button type="button" class="mini" data-acao="lancar" data-id="${i}"${dis}>Lançar</button>`;
-    return '';
+    return `<button type="button" class="mini" data-acao="lancar" data-id="${i}"${dis}>Lançar</button>${excluir}`;
   }
   const tagStatus = b => {
     const st = statusDe(b);
@@ -241,7 +245,7 @@
       b.desconto && `<li>Desconto: ${esc(b.desconto.join(' | '))}</li>`,
       b.conferencia && `<li>Conferência: soma ${esc(b.conferencia.somaCalc)} · recibo ${esc(b.conferencia.totalRecibo)} · documento ${esc(b.conferencia.valorDocumento)} · linha ${esc(b.conferencia.valorLinha)}</li>`,
       ...(b.problemas || []).map(p => `<li class="prob">${esc(p)}</li>`),
-      `<li>Extraído: ${esc(dataHora(b.extraidoEm))} · Lançado: ${esc(dataHora(b.lancadoEm))} · Gravado: ${esc(dataHora(b.gravadoEm))}</li>`,
+      `<li>Extraído: ${esc(dataHora(b.extraidoEm))} · Lançado: ${esc(dataHora(b.lancadoEm))}</li>`,
       `<li>Link: <span class="sub2">${esc(b.link)}</span></li>`
     ].filter(Boolean).join('');
     return `<tr class="det"><td colspan="${colunas}"><ul>${itens}</ul></td></tr>`;
@@ -352,7 +356,7 @@
         <td class="sub2">${ocorrenciasHtml(b)}${b.desconto ? '<br><b>Desconto:</b> ' + esc(b.desconto.join(' | ')) : ''}</td>
         <td class="num">${esc(b.vencimento || '—')}</td>
         <td class="num">${b.conferencia ? 'R$ ' + esc(b.conferencia.valorDocumento) : '—'}</td>
-        <td class="num sub2">${b.lancadoEm ? esc(dataHora(b.lancadoEm)) : '—'}${b.gravadoEm ? '<br>Gravado ' + esc(dataHora(b.gravadoEm)) : ''}</td>
+        <td class="num sub2">${b.lancadoEm ? esc(dataHora(b.lancadoEm)) : '—'}</td>
         <td>${tagStatus(b)}${temProblema(b) ? `<div class="prob">${b.problemas.map(esc).join('<br>')}</div>` : ''}</td>
         <td class="acoes">${botoesAcao(b)}</td></tr>${aberto ? detalhe(b, 9) : ''}`;
     }).join('') || linhaVazia(9, 'Nenhum boleto encontrado.', filtroAtivo(F.hist) ? 'Ajuste ou limpe os filtros.' : '');
@@ -443,6 +447,40 @@
     }
   });
 
+  // ---------- Duplicidades ----------
+  let DUP = { total: 0, itens: [] }, buscaDup = '', dupVersao = -1;
+  async function carregarDup() {
+    const r = await consultar('/api/duplicidades', { busca: buscaDup });
+    if (!r) return;
+    DUP = r; dupVersao = E.duplicidades; renderDup();
+  }
+  const dupAdiado = debounce(carregarDup, 250);
+  function renderDup() {
+    $('dupResultado').innerHTML = `<b>${DUP.total}</b> ${DUP.total === 1 ? 'registro' : 'registros'}`;
+    $('bLimparDup').disabled = !DUP.total;
+    $('tbDup').innerHTML = DUP.itens.map(d => `<tr class="linha">
+        <td class="num sub2">${esc(dataHora(d.detectadoEm))}</td>
+        <td>${esc(d.condominio || '—')}<div class="sub2">${esc(d.unidade || '')}</div></td>
+        <td class="num">${esc(d.codIdentificador || '—')}</td>
+        <td class="num">${esc(d.vencimento || '—')}</td>
+        <td class="num">${d.conferencia ? 'R$ ' + esc(d.conferencia.valorDocumento) : '—'}</td>
+        <td><span class="tag ${d.original?.status === 'lancado' ? 'lancado' : 'pendente'}">${esc(d.motivo)}</span>
+          <div class="sub2 url">${esc(d.link)}</div></td>
+        <td class="acoes">${d.codIdentificador ? `<button type="button" class="mini" data-d="ver" data-cod="${esc(d.codIdentificador)}" data-st="${esc(d.original?.status || '')}">Ver original</button>` : ''}
+          <button type="button" class="mini" data-d="remover" data-did="${d.id}">Remover</button></td></tr>`).join('')
+      || linhaVazia(7, 'Nenhuma duplicidade registrada.', 'Boletos repetidos encontrados na extração aparecem aqui.');
+  }
+  $('dupBusca').addEventListener('input', e => { buscaDup = e.target.value; dupAdiado(); });
+  $('bLimparDup').onclick = async () => { if (confirm('Limpar a lista de duplicidades?')) { if (await api('/api/duplicidades/limpar')) carregarDup(); } };
+  $('tbDup').addEventListener('click', async e => {
+    const btn = e.target.closest('button[data-d]'); if (!btn) return;
+    if (btn.dataset.d === 'remover') { if (await api('/api/duplicidades/remover', { id: Number(btn.dataset.did) })) carregarDup(); return; }
+    // Ver original: lançado → Histórico; pendente → Dashboard (busca pelo código).
+    if (btn.dataset.st === 'lancado') {
+      Object.assign(F.hist, FILTRO_PADRAO, { ordem: 'idx', dir: -1, busca: btn.dataset.cod }); lembrar(); location.hash = '#historico';
+    } else { F.dash.busca = btn.dataset.cod; $('dBusca').value = btn.dataset.cod; location.hash = '#dashboard'; renderDashboard(); }
+  });
+
   function renderConfig() {
     const c = E.config || {};
     const mapa = (c.mapaOcorrencias || []).map(m => `<code>/${esc(m.regex)}/i</code> → ${m.nome ? esc(m.nome) : '<span class="mut">ignorar (sem mapeamento)</span>'}`).join('<br>');
@@ -468,7 +506,9 @@
     $('bPausar').querySelector('small').textContent = x.pausado ? 'Continue o processo' : 'Pause o processo atual';
     $('bPausar').querySelector('.bola').innerHTML = ico(x.pausado ? 'i-play' : 'i-pause');
     $('bProx').disabled = !podeLancar() || !pend;
-    $('bArquivar').disabled = !!x.rodando || E.lancando !== null || !bs.length;
+    $('bLimparLista').disabled = !!x.rodando || E.lancando !== null || !bs.length;
+    $('nDup').textContent = E.duplicidades || '';
+    $('nDup').hidden = !E.duplicidades;
     $('viaTxt').textContent = E.via.aberto ? 'Navegador aberto' : 'Acesse o site de origem';
 
     const pw = $('progWrap');
@@ -481,13 +521,13 @@
     else if (x.rodando) [cls, icone, txt] = ['run', 'i-play', `Extraindo · ${x.feitos}/${x.total}`];
     else if (E.lancando !== null) [cls, icone, txt] = ['run', 'i-barcode', 'Lançando boleto…'];
     else if (x.erro) [cls, icone, txt] = ['err', 'i-stop', 'Erro: ' + x.erro];
-    else if (x.repetidos && !pend) txt = `${plural(x.repetidos, 'boleto já lançado', 'boletos já lançados')} antes`;
+    else if (x.duplicados && !pend) [cls, icone, txt] = ['wait', 'i-check', `${plural(x.duplicados, 'duplicado ignorado', 'duplicados ignorados')}`];
     else if (pend) txt = `${plural(pend, 'boleto pronto', 'boletos prontos')} para lançar`;
     $('badge').className = 'badge ' + cls;
     $('badge').innerHTML = ico(icone) + `<span>${esc(txt)}</span>`;
 
     $('resumo').innerHTML = bs.length ? [
-      ['Total', bs.length], ['Pendentes', pend], ['Preenchidos', n('lancado')], ['Gravados', n('gravado')], ['Com problema', prob]
+      ['Na lista', bs.length], ['Prontos', pend], ['Com problema', prob], ['Erro no lançamento', n('erro')]
     ].map(([k, v]) => `<span class="chip">${k}: <b>${v}</b></span>`).join('') : '';
 
     $('ultima').textContent = dataHora(E.atualizadoEm);
@@ -501,6 +541,7 @@
     // Dados do banco: recarrega só a tela visível quando algo mudou.
     if (visivel('historico') && histVersao !== E.versao) histAdiado();
     if (visivel('condominios')) condAdiado();
+    if (visivel('duplicidades') && dupVersao !== E.duplicidades) dupAdiado();
   }
   const condAdiado = debounce(carregarCondominios, 300);
 

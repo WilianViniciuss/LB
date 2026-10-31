@@ -163,6 +163,10 @@ textarea:focus { outline: none; border-color: var(--azul); box-shadow: 0 0 0 3px
 mark { background: color-mix(in srgb, var(--amar) 30%, transparent); color: inherit; border-radius: 3px; padding: 0 1px }
 
 /* ---------- Condomínios ---------- */
+.nav-badge { margin-left: auto; background: var(--roxo); color: #fff; font-size: 11px; font-weight: 700; border-radius: 99px; padding: 1px 6px; min-width: 18px; text-align: center }
+nav a { gap: 14px }
+.tabela .url { font-family: ui-monospace, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; margin-top: 4px }
+.tabela td .tag { white-space: normal }
 .tabela td:first-child { white-space: nowrap }
 .tag-mini { font-size: 11px; font-weight: 600; color: var(--azul); background: var(--azul-s); border-radius: 99px; padding: 1px 7px; vertical-align: 1px }
 .tabela-wrap.alta { max-height: 66vh }
@@ -222,7 +226,7 @@ mark { background: color-mix(in srgb, var(--amar) 30%, transparent); color: inhe
   .grid2 { grid-template-columns: 1fr }
   .app { grid-template-columns: 76px 1fr }
   .side { padding: 24px 10px; align-items: center }
-  .brand span, nav a span, .promo { display: none }
+  .brand span, nav a span, .promo, .nav-badge { display: none !important }
   nav a { padding: 14px; justify-content: center }
 }
 @media (max-width: 640px) {

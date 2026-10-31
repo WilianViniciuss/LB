@@ -38,6 +38,7 @@
   <symbol id="i-bolt" viewBox="0 0 24 24"><path fill="currentColor" d="M13.5 2 4 14h7l-1.5 8L19 10h-7z"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></g></symbol>
   <symbol id="i-down" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></g></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></g></symbol>
   <symbol id="i-chev" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m9 6 6 6-6 6"/></symbol>
 </svg>
 
@@ -48,6 +49,7 @@
       <a href="#dashboard" data-view="dashboard" class="ativo"><svg><use href="#i-home"/></svg><span>Dashboard</span></a>
       <a href="#condominios" data-view="condominios"><svg><use href="#i-build"/></svg><span>Condomínios</span></a>
       <a href="#historico" data-view="historico"><svg><use href="#i-hist"/></svg><span>Histórico</span></a>
+      <a href="#duplicidades" data-view="duplicidades"><svg><use href="#i-copy"/></svg><span>Duplicidades</span><b id="nDup" class="nav-badge" hidden></b></a>
       <a href="#configuracoes" data-view="configuracoes"><svg><use href="#i-cfg"/></svg><span>Configurações</span></a>
       <a href="#ajuda" data-view="ajuda"><svg><use href="#i-help"/></svg><span>Ajuda</span></a>
     </nav>
@@ -99,7 +101,7 @@
           <span class="ico verde"><svg><use href="#i-db"/></svg></span>
           <div><h2>Dados Extraídos</h2><p>Confira os dados processados antes de iniciar o lançamento.</p></div>
           <div class="h-acoes">
-            <button id="bArquivar" class="btn-light" type="button" title="Move o lote atual para o Histórico"><svg><use href="#i-hist"/></svg>Arquivar lote</button>
+            <button id="bLimparLista" class="btn-light" type="button" title="Remove da lista os boletos ainda não lançados"><svg><use href="#i-trash"/></svg>Limpar lista</button>
             <span id="badge" class="badge ok"><svg><use href="#i-check"/></svg><span>Pronto para iniciar</span></span>
           </div>
         </div>
@@ -108,8 +110,8 @@
         <div class="busca-barra compacta">
           <label class="campo busca"><svg><use href="#i-search"/></svg><input id="dBusca" type="search" placeholder="Buscar condomínio, unidade, código…" aria-label="Buscar"></label>
           <label class="campo"><span>Status</span><select id="dStatus">
-            <option value="todos">Todos</option><option value="pendente">Pendentes</option><option value="lancado">Preenchidos</option>
-            <option value="gravado">Gravados</option><option value="problema">Com problema</option></select></label>
+            <option value="todos">Todos</option><option value="pendente">Prontos</option><option value="problema">Com problema</option>
+            <option value="erro">Erro no lançamento</option></select></label>
           <span id="dResultado" class="resultado"></span>
         </div>
         <div class="tabela-wrap">
@@ -167,7 +169,7 @@
       <div class="card">
         <div class="card-h">
           <span class="ico azul"><svg><use href="#i-hist"/></svg></span>
-          <div><h2>Histórico de Boletos</h2><p>Todos os boletos salvos no banco local, inclusive lotes arquivados.</p></div>
+          <div><h2>Histórico de Lançamentos</h2><p>Boletos lançados no Via Imob. Um boleto lançado não pode ser lançado de novo.</p></div>
           <div class="h-acoes">
             <button id="bCsv" class="btn-light" type="button"><svg><use href="#i-down"/></svg>Exportar CSV</button>
           </div>
@@ -176,20 +178,13 @@
           <label class="campo busca"><svg><use href="#i-search"/></svg><input id="hBusca" type="search" placeholder="Buscar condomínio, unidade, código, ocorrência…" aria-label="Buscar"></label>
           <label class="campo"><span>Condomínio</span><select id="hCond"><option value="">Todos</option></select></label>
           <label class="campo"><span>Filtrar data por</span><select id="hDataTipo">
-            <option value="lancadoEm">Lançamento</option><option value="gravadoEm">Gravação</option>
+            <option value="lancadoEm">Lançamento</option>
             <option value="extraidoEm">Extração</option><option value="vencimento">Vencimento</option></select></label>
           <label class="campo"><span>De</span><input id="hDe" type="date"></label>
           <label class="campo"><span>Até</span><input id="hAte" type="date"></label>
           <label class="campo curto"><span>Valor mín. (R$)</span><input id="hMin" inputmode="decimal" placeholder="0,00"></label>
           <label class="campo curto"><span>Valor máx. (R$)</span><input id="hMax" inputmode="decimal" placeholder="0,00"></label>
           <button id="hLimpar" class="btn-light" type="button">Limpar filtros</button>
-        </div>
-        <div class="filtros" id="filtros">
-          <button type="button" data-f="todos" class="ativo">Todos</button>
-          <button type="button" data-f="pendente">Pendentes</button>
-          <button type="button" data-f="lancado">Preenchidos</button>
-          <button type="button" data-f="gravado">Gravados</button>
-          <button type="button" data-f="problema">Com problema</button>
         </div>
         <div id="hResultado" class="resultado"></div>
         <div class="tabela-wrap">
@@ -200,6 +195,27 @@
           </table>
         </div>
         <div class="mais"><button id="hMais" class="btn-light" type="button" hidden>Mostrar mais</button></div>
+      </div>
+    </section>
+
+    <!-- ============ DUPLICIDADES ============ -->
+    <section class="view" data-view="duplicidades" hidden>
+      <div class="card">
+        <div class="card-h">
+          <span class="ico roxo"><svg><use href="#i-copy"/></svg></span>
+          <div><h2>Duplicidades</h2><p>Boletos encontrados na extração que já estavam lançados ou na lista. Foram ignorados para evitar lançamento duplo.</p></div>
+          <div class="h-acoes"><button id="bLimparDup" class="btn-light" type="button"><svg><use href="#i-trash"/></svg>Limpar lista</button></div>
+        </div>
+        <div class="busca-barra compacta">
+          <label class="campo busca"><svg><use href="#i-search"/></svg><input id="dupBusca" type="search" placeholder="Buscar condomínio, unidade, código, link…" aria-label="Buscar duplicidade"></label>
+          <span id="dupResultado" class="resultado"></span>
+        </div>
+        <div class="tabela-wrap alta">
+          <table class="tabela">
+            <thead><tr><th>Detectado em</th><th>Condomínio / Unidade</th><th>Cód.</th><th>Vencimento</th><th>Valor</th><th>Motivo</th><th class="acoes-th"><span class="sr">Ações</span></th></tr></thead>
+            <tbody id="tbDup"></tbody>
+          </table>
+        </div>
       </div>
     </section>
 
@@ -226,9 +242,9 @@
           <li><b>Extração:</b> clique em <em>Iniciar Extração</em>. Ela roda em segundo plano; use <em>Pausar</em> ou <em>Parar</em> quando quiser.</li>
           <li><b>Navegador:</b> clique em <em>Abrir Navegador</em>, faça login no Via Imob e deixe a tela <b>Manutenção encargo</b> visível na aba ativa.</li>
           <li><b>Condomínios:</b> após a extração, cada link fica salvo no seu condomínio. Na tela <em>Condomínios</em> use <em>Extrair</em> ou <em>Usar links</em> para repetir no mês seguinte.</li>
-          <li><b>Lançamento:</b> <em>Iniciar Lançamento</em> preenche o próximo boleto pendente. Confira o total e <b>grave manualmente</b> no Via Imob; depois marque como gravado.</li>
+          <li><b>Lançamento:</b> <em>Iniciar Lançamento</em> preenche o próximo boleto pronto. Ao concluir, ele é marcado como <b>lançado</b> e vai para o Histórico. Confira o total e <b>grave</b> no Via Imob. Se não gravar, use <em>Desfazer</em> no Histórico.</li>
         </ol>
-        <p class="mut">Tudo fica salvo no banco local <code>dados/boletopro.db</code>, com cópia de segurança diária em <code>dados/backup/</code>. Um boleto já lançado não é duplicado se o link for extraído de novo.</p>
+        <p class="mut">Tudo fica salvo no banco local <code>dados/boletopro.db</code>, com cópia de segurança diária em <code>dados/backup/</code>. Boleto repetido na extração (mesma linha digitável) é ignorado e registrado em <em>Duplicidades</em>; um boleto já lançado nunca é lançado de novo.</p>
         <p class="mut">Boletos com problema (soma divergente, dados ausentes ou ocorrência sem mapeamento) não são lançados. Ajuste <code>mapaOcorrencias</code> no <code>config.json</code> quando necessário.</p>
       </div>
     </section>

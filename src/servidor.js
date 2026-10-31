@@ -44,6 +44,7 @@ if (fs.existsSync(arqPlano)) {
 banco.backupDiario();
 setInterval(() => banco.backupDiario(), 6 * 3600 * 1000).unref();
 estado.boletos = banco.loteAtual();
+estado.duplicidades = banco.contarDuplicidades();
 estado.config.banco = banco.arquivo;
 
 const mudou = (persistir = true) => {
@@ -149,22 +150,23 @@ async function abaAtiva() {
   return pages[pages.length - 1];
 }
 
+// Lança um boleto da lista. Sucesso → marcado como lançado e movido para o Histórico.
 async function lancar(id) {
   if (estado.lancando !== null) throw erro('Já existe um lançamento em andamento', 409);
-  let b = boletoDoLote(id);
-  if (!b) { // boleto arquivado (vindo do Histórico): volta para o lote atual
-    b = banco.porId(id);
-    if (!b) throw erro('Boleto inexistente', 404);
-    b.arquivado = false; estado.boletos.push(b);
-  }
+  const b = boletoDoLote(id);
+  if (!b) throw erro('Boleto não está na lista para lançar (já lançado ou excluído)', 409);
   if (b.problemas?.length) throw erro('Boleto com problemas: ' + b.problemas.join('; '), 400);
+  // Trava contra lançamento duplo: mesma linha digitável já lançada antes.
+  const dup = banco.jaLancado(b.linhaDigitavel, b.id);
+  if (dup) throw erro(`Este boleto já foi lançado (registro #${dup.id}). Lançamento bloqueado.`, 409);
   estado.lancando = id;
   try {
     const page = await abaAtiva();
     b.status = 'lancando'; delete b.erroLancamento; salvarBoleto(b);
     await page.evaluate(gerarScript(b));
-    b.status = 'lancado'; // preenchido; a gravação continua manual no Via Imob
+    b.status = 'lancado';
     b.lancadoEm = new Date().toISOString();
+    estado.boletos = estado.boletos.filter(x => x.id !== b.id); // sai da lista → Histórico
   } catch (e) {
     b.status = 'erro'; b.erroLancamento = String(e.message).split('\n')[0];
   } finally { estado.lancando = null; salvarBoleto(b); }
@@ -179,15 +181,17 @@ function iniciarExtracao(texto) {
   if (!links.length) throw Object.assign(new Error('Nenhum link encontrado'), { code: 400 });
   ctrl = { pausado: false, parado: false };
   const c = ctrl;
-  estado.extracao = { rodando: true, pausado: false, total: links.length, feitos: 0, repetidos: 0, erro: null };
+  estado.extracao = { rodando: true, pausado: false, total: links.length, feitos: 0, duplicados: 0, erro: null };
   mudou(false);
   extrair(links, cfg, (_, novo) => {
     novo.extraidoEm = new Date().toISOString();
     try {
-      const { boleto, repetido } = banco.registrarExtracao(novo);
-      const i = estado.boletos.findIndex(x => x.id === boleto.id);
-      if (i >= 0) estado.boletos[i] = boleto; else estado.boletos.push(boleto);
-      if (repetido) estado.extracao.repetidos = (estado.extracao.repetidos || 0) + 1;
+      const { boleto, duplicado } = banco.registrarExtracao(novo);
+      if (duplicado) { estado.extracao.duplicados++; estado.duplicidades = banco.contarDuplicidades(); }
+      else {
+        const i = estado.boletos.findIndex(x => x.id === boleto.id);
+        if (i >= 0) estado.boletos[i] = boleto; else estado.boletos.push(boleto);
+      }
     } catch (e) { console.error('Falha ao gravar boleto:', e.message); }
     estado.extracao.feitos++; mudou();
   }, c)
@@ -200,7 +204,6 @@ function iniciarExtracao(texto) {
 const TOKEN = crypto.randomBytes(24).toString('hex');
 const hostsOk = new Set([`localhost:${porta}`, `127.0.0.1:${porta}`]);
 const origensOk = new Set([...hostsOk].map(h => 'http://' + h));
-const STATUS_MANUAIS = new Set(['pendente', 'lancado', 'gravado']);
 const LIMITE_CORPO = 2 * 1024 * 1024;
 
 const SEGURANCA = {
@@ -259,11 +262,11 @@ const rotas = {
     await ctrl.browser?.close().catch(() => {});
     return { ok: true };
   },
-  // Arquiva o lote atual: some do Dashboard, continua no Histórico.
+  // Remove da lista os boletos ainda não lançados (os lançados continuam no Histórico).
   'POST /api/limpar': async () => {
     if (estado.extracao.rodando) throw erro('Extração em andamento', 409);
     if (estado.lancando !== null) throw erro('Lançamento em andamento', 409);
-    const n = banco.arquivarLote(); estado.boletos = []; mudou(); return { ok: true, arquivados: n };
+    const n = banco.limparPendentes(); estado.boletos = banco.loteAtual(); mudou(); return { ok: true, removidos: n };
   },
   'POST /api/via/abrir': async () => { await abrirVia(); return { ok: true }; },
   'POST /api/lancar': async ({ id }) => {
@@ -272,16 +275,26 @@ const rotas = {
     if (b.status === 'erro') throw erro(b.erroLancamento || 'Falha no lançamento', 400);
     return { ok: true };
   },
-  'POST /api/status': async ({ id, status }) => {
-    if (!idValido(id) || !STATUS_MANUAIS.has(status)) throw erro('Parâmetros inválidos', 400);
+  'POST /api/boletos/excluir': async ({ id }) => {
+    if (!idValido(id)) throw erro('Boleto inválido', 400);
     if (estado.lancando === id) throw erro('Boleto em lançamento', 409);
-    const b = boletoDoLote(id) || banco.porId(id);
-    if (!b) throw erro('Boleto inexistente', 404);
-    b.status = status;
-    if (status === 'gravado') b.gravadoEm = new Date().toISOString();
-    else delete b.gravadoEm;
-    if (status === 'pendente') delete b.lancadoEm;
-    salvarBoleto(b); return { ok: true };
+    if (!banco.excluir(id)) throw erro('Só é possível excluir boletos ainda não lançados', 409);
+    estado.boletos = estado.boletos.filter(x => x.id !== id); mudou(); return { ok: true };
+  },
+  // Desfaz um lançamento (ex.: não foi gravado no Via Imob): volta para a lista.
+  'POST /api/desfazer': async ({ id }) => {
+    if (!idValido(id)) throw erro('Boleto inválido', 400);
+    const b = banco.porId(id);
+    if (!b || b.status !== 'lancado') throw erro('Boleto não está lançado', 409);
+    b.status = 'pendente'; delete b.lancadoEm; delete b.gravadoEm;
+    estado.boletos.push(b); salvarBoleto(b); return { ok: true };
+  },
+  'POST /api/duplicidades/remover': async ({ id }) => {
+    if (!idValido(id)) throw erro('Registro inválido', 400);
+    banco.removerDuplicidade(id); estado.duplicidades = banco.contarDuplicidades(); mudou(false); return { ok: true };
+  },
+  'POST /api/duplicidades/limpar': async () => {
+    banco.limparDuplicidades(); estado.duplicidades = 0; mudou(false); return { ok: true };
   },
   // ---- Condomínios / links ----
   'POST /api/condominios/criar': async ({ nome }) => {
@@ -311,6 +324,7 @@ const consultas = {
     return { ...r, versao: estado.versao };
   },
   '/api/condominios': () => banco.condominios(),
+  '/api/duplicidades': q => banco.duplicidades(Object.fromEntries(q)),
   '/api/condominios/links': q => {
     const id = q.get('id');
     if (id !== 'sem' && !/^\d+$/.test(id || '')) throw erro('Condomínio inválido', 400);
