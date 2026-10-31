@@ -7,11 +7,11 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { extrair, separarLinks, gerarScript } from './extrator.js';
+import { abrirBanco } from './banco.js';
 
 const raiz = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cfg = JSON.parse(fs.readFileSync(process.env.LB_CONFIG || path.join(raiz, 'config.json'), 'utf8'));
 const { version: versaoApp } = JSON.parse(fs.readFileSync(path.join(raiz, 'package.json'), 'utf8'));
-const arqPlano = path.join(raiz, 'plano_lote.json');
 
 const porta = Number(cfg.porta);
 if (!Number.isInteger(porta) || porta < 1024 || porta > 65535) throw new Error('config.json: "porta" inválida');
@@ -26,33 +26,39 @@ const estado = {
   extracao: { rodando: false, pausado: false, total: 0, feitos: 0, erro: null },
   boletos: [],
   via: { aberto: false },
-  lancando: null // índice em andamento
+  lancando: null // id do boleto em lançamento
 };
-try {
-  const salvo = JSON.parse(fs.readFileSync(arqPlano, 'utf8'));
-  estado.boletos = Array.isArray(salvo.boletos) ? salvo.boletos : [];
-  estado.atualizadoEm = salvo.atualizadoEm || null;
-} catch {}
+// ---------- Banco local ----------
+const banco = abrirBanco(process.env.LB_DADOS || path.join(raiz, 'dados'));
+// Migração única do antigo plano_lote.json para o banco.
+const arqPlano = path.join(raiz, 'plano_lote.json');
+if (fs.existsSync(arqPlano)) {
+  try {
+    if (banco.vazio()) {
+      const n = banco.importarJson(JSON.parse(fs.readFileSync(arqPlano, 'utf8')).boletos || []);
+      console.log(`${n} boletos importados de plano_lote.json`);
+    }
+    fs.renameSync(arqPlano, arqPlano.replace(/\.json$/, '.importado.json'));
+  } catch (e) { console.error('Falha ao importar plano_lote.json:', e.message); }
+}
+banco.backupDiario();
+setInterval(() => banco.backupDiario(), 6 * 3600 * 1000).unref();
+estado.boletos = banco.loteAtual();
+estado.config.banco = banco.arquivo;
 
-// Gravação com debounce e escrita atômica (tmp + rename): não corrompe o arquivo se o processo cair.
-let timerSalvar = null;
-const salvarAgora = () => {
-  clearTimeout(timerSalvar); timerSalvar = null;
-  const tmp = arqPlano + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify({ atualizadoEm: estado.atualizadoEm, boletos: estado.boletos }, null, 2));
-  fs.renameSync(tmp, arqPlano);
-};
 const mudou = (persistir = true) => {
   estado.versao++;
-  if (!persistir) return;
-  estado.atualizadoEm = new Date().toISOString();
-  if (!timerSalvar) timerSalvar = setTimeout(() => { try { salvarAgora(); } catch (e) { console.error('Falha ao salvar:', e.message); } }, 400);
+  if (persistir) estado.atualizadoEm = new Date().toISOString();
 };
+const salvarBoleto = b => { banco.atualizar(b); mudou(); };
+const boletoDoLote = id => estado.boletos.find(b => b.id === id);
+const erro = (msg, code) => Object.assign(new Error(msg), { code });
+
 // Encerramento limpo: grava a lista, salva o login do Via Imob e fecha o navegador.
 let encerrando = false;
 async function encerrar() {
   if (encerrando) return; encerrando = true;
-  try { if (timerSalvar) salvarAgora(); await salvarSessao(); await viaCtx?.close().catch(() => {}); } finally { process.exit(0); }
+  try { await salvarSessao(); await viaCtx?.close().catch(() => {}); banco.fechar(); } finally { process.exit(0); }
 }
 for (const sinal of ['SIGINT', 'SIGTERM']) process.on(sinal, encerrar);
 
@@ -143,34 +149,48 @@ async function abaAtiva() {
   return pages[pages.length - 1];
 }
 
-async function lancar(i) {
-  const b = estado.boletos[i];
-  if (!b) throw new Error('Boleto inexistente');
-  if (b.problemas?.length) throw new Error('Boleto com problemas: ' + b.problemas.join('; '));
-  if (estado.lancando !== null) throw new Error('Já existe um lançamento em andamento');
-  estado.lancando = i;
+async function lancar(id) {
+  if (estado.lancando !== null) throw erro('Já existe um lançamento em andamento', 409);
+  let b = boletoDoLote(id);
+  if (!b) { // boleto arquivado (vindo do Histórico): volta para o lote atual
+    b = banco.porId(id);
+    if (!b) throw erro('Boleto inexistente', 404);
+    b.arquivado = false; estado.boletos.push(b);
+  }
+  if (b.problemas?.length) throw erro('Boleto com problemas: ' + b.problemas.join('; '), 400);
+  estado.lancando = id;
   try {
     const page = await abaAtiva();
-    b.status = 'lancando'; delete b.erroLancamento; mudou();
+    b.status = 'lancando'; delete b.erroLancamento; salvarBoleto(b);
     await page.evaluate(gerarScript(b));
     b.status = 'lancado'; // preenchido; a gravação continua manual no Via Imob
     b.lancadoEm = new Date().toISOString();
   } catch (e) {
     b.status = 'erro'; b.erroLancamento = String(e.message).split('\n')[0];
-  } finally { estado.lancando = null; mudou(); }
+  } finally { estado.lancando = null; salvarBoleto(b); }
+  return b;
 }
 
 // ---------- Extração ----------
 let ctrl = null;
 function iniciarExtracao(texto) {
-  if (estado.extracao.rodando) throw Object.assign(new Error('Extração já em andamento'), { code: 409 });
-  const links = separarLinks(texto);
+  if (estado.extracao.rodando) throw erro('Extração já em andamento', 409);
+  const links = Array.isArray(texto) ? texto : separarLinks(texto);
   if (!links.length) throw Object.assign(new Error('Nenhum link encontrado'), { code: 400 });
   ctrl = { pausado: false, parado: false };
   const c = ctrl;
-  estado.extracao = { rodando: true, pausado: false, total: links.length, feitos: 0, erro: null };
+  estado.extracao = { rodando: true, pausado: false, total: links.length, feitos: 0, repetidos: 0, erro: null };
   mudou(false);
-  extrair(links, cfg, (_, b) => { b.extraidoEm = new Date().toISOString(); estado.boletos.push(b); estado.extracao.feitos++; mudou(); }, c)
+  extrair(links, cfg, (_, novo) => {
+    novo.extraidoEm = new Date().toISOString();
+    try {
+      const { boleto, repetido } = banco.registrarExtracao(novo);
+      const i = estado.boletos.findIndex(x => x.id === boleto.id);
+      if (i >= 0) estado.boletos[i] = boleto; else estado.boletos.push(boleto);
+      if (repetido) estado.extracao.repetidos = (estado.extracao.repetidos || 0) + 1;
+    } catch (e) { console.error('Falha ao gravar boleto:', e.message); }
+    estado.extracao.feitos++; mudou();
+  }, c)
     .catch(e => { if (!c.parado) estado.extracao.erro = String(e.message).split('\n')[0]; })
     .finally(() => { estado.extracao.rodando = false; estado.extracao.pausado = false; if (ctrl === c) ctrl = null; mudou(false); });
   return links.length;
@@ -219,7 +239,8 @@ const lerCorpo = req => new Promise((ok, falha) => {
   req.on('end', () => { try { const o = JSON.parse(Buffer.concat(partes).toString('utf8') || '{}'); ok(o && typeof o === 'object' ? o : {}); } catch { falha(Object.assign(new Error('JSON inválido'), { code: 400 })); } });
   req.on('error', falha);
 });
-const indiceValido = i => Number.isInteger(i) && i >= 0 && i < estado.boletos.length;
+const idValido = id => Number.isInteger(id) && id > 0;
+const LIMITE_LINKS_CORPO = 1000;
 const tokenOk = req => {
   const t = String(req.headers['x-token'] || '');
   return t.length === TOKEN.length && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(TOKEN));
@@ -228,37 +249,72 @@ const tokenOk = req => {
 const rotas = {
   'POST /api/extrair': async b => ({ ok: true, total: iniciarExtracao(String(b.texto ?? '')) }),
   'POST /api/extracao/pausar': async () => {
-    if (!ctrl) throw Object.assign(new Error('Nenhuma extração em andamento'), { code: 409 });
+    if (!ctrl) throw erro('Nenhuma extração em andamento', 409);
     ctrl.pausado = !ctrl.pausado; estado.extracao.pausado = ctrl.pausado; mudou(false);
     return { ok: true, pausado: ctrl.pausado };
   },
   'POST /api/extracao/parar': async () => {
-    if (!ctrl) throw Object.assign(new Error('Nenhuma extração em andamento'), { code: 409 });
+    if (!ctrl) throw erro('Nenhuma extração em andamento', 409);
     ctrl.parado = true; ctrl.pausado = false;
     await ctrl.browser?.close().catch(() => {});
     return { ok: true };
   },
+  // Arquiva o lote atual: some do Dashboard, continua no Histórico.
   'POST /api/limpar': async () => {
-    if (estado.extracao.rodando) throw Object.assign(new Error('Extração em andamento'), { code: 409 });
-    if (estado.lancando !== null) throw Object.assign(new Error('Lançamento em andamento'), { code: 409 });
-    estado.boletos = []; mudou(); return { ok: true };
+    if (estado.extracao.rodando) throw erro('Extração em andamento', 409);
+    if (estado.lancando !== null) throw erro('Lançamento em andamento', 409);
+    const n = banco.arquivarLote(); estado.boletos = []; mudou(); return { ok: true, arquivados: n };
   },
   'POST /api/via/abrir': async () => { await abrirVia(); return { ok: true }; },
-  'POST /api/lancar': async ({ indice }) => {
-    if (!indiceValido(indice)) throw Object.assign(new Error('Índice inválido'), { code: 400 });
-    await lancar(indice);
-    const b = estado.boletos[indice];
-    if (b.status === 'erro') throw Object.assign(new Error(b.erroLancamento || 'Falha no lançamento'), { code: 400 });
+  'POST /api/lancar': async ({ id }) => {
+    if (!idValido(id)) throw erro('Boleto inválido', 400);
+    const b = await lancar(id);
+    if (b.status === 'erro') throw erro(b.erroLancamento || 'Falha no lançamento', 400);
     return { ok: true };
   },
-  'POST /api/status': async ({ indice, status }) => {
-    if (!indiceValido(indice) || !STATUS_MANUAIS.has(status)) throw Object.assign(new Error('Parâmetros inválidos'), { code: 400 });
-    if (estado.lancando === indice) throw Object.assign(new Error('Boleto em lançamento'), { code: 409 });
-    const b = estado.boletos[indice];
+  'POST /api/status': async ({ id, status }) => {
+    if (!idValido(id) || !STATUS_MANUAIS.has(status)) throw erro('Parâmetros inválidos', 400);
+    if (estado.lancando === id) throw erro('Boleto em lançamento', 409);
+    const b = boletoDoLote(id) || banco.porId(id);
+    if (!b) throw erro('Boleto inexistente', 404);
     b.status = status;
     if (status === 'gravado') b.gravadoEm = new Date().toISOString();
     else delete b.gravadoEm;
-    mudou(); return { ok: true };
+    if (status === 'pendente') delete b.lancadoEm;
+    salvarBoleto(b); return { ok: true };
+  },
+  // ---- Condomínios / links ----
+  'POST /api/condominios/criar': async ({ nome }) => {
+    const id = banco.criarCondominio(String(nome ?? '').slice(0, 200)); mudou(false); return { ok: true, id };
+  },
+  'POST /api/condominios/vincular': async ({ condominioId, texto }) => {
+    const urls = separarLinks(String(texto ?? '')).slice(0, LIMITE_LINKS_CORPO);
+    if (!urls.length) throw erro('Nenhum link encontrado', 400);
+    if (condominioId !== 'sem' && !idValido(condominioId)) throw erro('Condomínio inválido', 400);
+    const n = banco.vincularLinks(condominioId, urls); mudou(false); return { ok: true, total: n };
+  },
+  'POST /api/links/remover': async ({ id }) => {
+    if (!idValido(id)) throw erro('Link inválido', 400);
+    banco.removerLink(id); mudou(false); return { ok: true };
+  },
+  'POST /api/condominios/extrair': async ({ condominioId }) => {
+    if (condominioId !== 'sem' && !idValido(condominioId)) throw erro('Condomínio inválido', 400);
+    const urls = banco.linksDe(condominioId).map(l => l.url);
+    if (!urls.length) throw erro('Este condomínio não tem links', 400);
+    return { ok: true, total: iniciarExtracao(urls) };
+  }
+};
+
+const consultas = {
+  '/api/historico': q => {
+    const r = banco.historico(Object.fromEntries(q));
+    return { ...r, versao: estado.versao };
+  },
+  '/api/condominios': () => banco.condominios(),
+  '/api/condominios/links': q => {
+    const id = q.get('id');
+    if (id !== 'sem' && !/^\d+$/.test(id || '')) throw erro('Condomínio inválido', 400);
+    return { links: banco.linksDe(id) };
   }
 };
 
@@ -271,8 +327,9 @@ const servidor = http.createServer(async (req, res) => {
     if (req.method === 'GET' || req.method === 'HEAD') {
       const arq = estaticos.get(url.pathname);
       if (arq) return responder(res, 200, req.method === 'HEAD' ? undefined : arq.corpo, arq.tipo);
+      if (url.pathname.startsWith('/api/') && !tokenOk(req)) return json(res, { erro: 'Não autorizado' }, 403);
+      if (consultas[url.pathname]) return json(res, consultas[url.pathname](url.searchParams));
       if (url.pathname === '/api/estado') {
-        if (!tokenOk(req)) return json(res, { erro: 'Não autorizado' }, 403);
         // Polling barato: sem mudança desde a versão do cliente → 204 sem corpo.
         if (url.searchParams.get('v') === String(estado.versao)) return responder(res, 204);
         return json(res, estado);

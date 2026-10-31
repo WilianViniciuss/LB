@@ -46,6 +46,7 @@
     <div class="brand"><img src="/logo.svg" alt="" width="52" height="52"><span>Boleto<b>Pro</b></span></div>
     <nav>
       <a href="#dashboard" data-view="dashboard" class="ativo"><svg><use href="#i-home"/></svg><span>Dashboard</span></a>
+      <a href="#condominios" data-view="condominios"><svg><use href="#i-build"/></svg><span>Condomínios</span></a>
       <a href="#historico" data-view="historico"><svg><use href="#i-hist"/></svg><span>Histórico</span></a>
       <a href="#configuracoes" data-view="configuracoes"><svg><use href="#i-cfg"/></svg><span>Configurações</span></a>
       <a href="#ajuda" data-view="ajuda"><svg><use href="#i-help"/></svg><span>Ajuda</span></a>
@@ -98,6 +99,7 @@
           <span class="ico verde"><svg><use href="#i-db"/></svg></span>
           <div><h2>Dados Extraídos</h2><p>Confira os dados processados antes de iniciar o lançamento.</p></div>
           <div class="h-acoes">
+            <button id="bArquivar" class="btn-light" type="button" title="Move o lote atual para o Histórico"><svg><use href="#i-hist"/></svg>Arquivar lote</button>
             <span id="badge" class="badge ok"><svg><use href="#i-check"/></svg><span>Pronto para iniciar</span></span>
           </div>
         </div>
@@ -136,15 +138,38 @@
       </div>
     </section>
 
+    <!-- ============ CONDOMÍNIOS ============ -->
+    <section class="view" data-view="condominios" hidden>
+      <div class="card">
+        <div class="card-h">
+          <span class="ico verde"><svg><use href="#i-build"/></svg></span>
+          <div><h2>Condomínios e Links</h2><p>Cada link fica vinculado ao seu condomínio após a extração. Reutilize nos próximos meses.</p></div>
+          <div class="h-acoes novo-cond">
+            <input id="novoCond" maxlength="200" placeholder="Novo condomínio" aria-label="Nome do novo condomínio">
+            <button id="bNovoCond" class="btn-light" type="button">Adicionar</button>
+          </div>
+        </div>
+        <div class="busca-barra compacta">
+          <label class="campo busca"><svg><use href="#i-search"/></svg><input id="cBusca" type="search" placeholder="Buscar condomínio…" aria-label="Buscar condomínio"></label>
+          <span id="cResultado" class="resultado"></span>
+        </div>
+        <div class="tabela-wrap alta">
+          <table class="tabela">
+            <thead><tr><th>Condomínio</th><th>Links</th><th>Boletos</th><th>Lançados</th><th>Última extração</th><th>Último lançamento</th><th class="acoes-th"><span class="sr">Ações</span></th></tr></thead>
+            <tbody id="tbCond"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <!-- ============ HISTÓRICO ============ -->
     <section class="view" data-view="historico" hidden>
       <div class="card">
         <div class="card-h">
           <span class="ico azul"><svg><use href="#i-hist"/></svg></span>
-          <div><h2>Histórico de Boletos</h2><p>Todos os boletos extraídos e o status de lançamento.</p></div>
+          <div><h2>Histórico de Boletos</h2><p>Todos os boletos salvos no banco local, inclusive lotes arquivados.</p></div>
           <div class="h-acoes">
             <button id="bCsv" class="btn-light" type="button"><svg><use href="#i-down"/></svg>Exportar CSV</button>
-            <button id="bLimparLista" class="btn-light perigo" type="button"><svg><use href="#i-trash"/></svg>Limpar lista</button>
           </div>
         </div>
         <div class="busca-barra">
@@ -174,6 +199,7 @@
             <tbody id="tbHist"></tbody>
           </table>
         </div>
+        <div class="mais"><button id="hMais" class="btn-light" type="button" hidden>Mostrar mais</button></div>
       </div>
     </section>
 
@@ -199,8 +225,10 @@
           <li><b>Links:</b> cole os links dos boletos (um por linha) ou envie um <code>.txt</code>. Linhas iniciadas com <code>#</code> são ignoradas.</li>
           <li><b>Extração:</b> clique em <em>Iniciar Extração</em>. Ela roda em segundo plano; use <em>Pausar</em> ou <em>Parar</em> quando quiser.</li>
           <li><b>Navegador:</b> clique em <em>Abrir Navegador</em>, faça login no Via Imob e deixe a tela <b>Manutenção encargo</b> visível na aba ativa.</li>
+          <li><b>Condomínios:</b> após a extração, cada link fica salvo no seu condomínio. Na tela <em>Condomínios</em> use <em>Extrair</em> ou <em>Usar links</em> para repetir no mês seguinte.</li>
           <li><b>Lançamento:</b> <em>Iniciar Lançamento</em> preenche o próximo boleto pendente. Confira o total e <b>grave manualmente</b> no Via Imob; depois marque como gravado.</li>
         </ol>
+        <p class="mut">Tudo fica salvo no banco local <code>dados/boletopro.db</code>, com cópia de segurança diária em <code>dados/backup/</code>. Um boleto já lançado não é duplicado se o link for extraído de novo.</p>
         <p class="mut">Boletos com problema (soma divergente, dados ausentes ou ocorrência sem mapeamento) não são lançados. Ajuste <code>mapaOcorrencias</code> no <code>config.json</code> quando necessário.</p>
       </div>
     </section>

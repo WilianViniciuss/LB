@@ -5,3 +5,5 @@ servidor.log
 links.txt
 plano_lote.json.tmp
 perfil-app/
+dados/
+plano_lote.importado.json

@@ -10,8 +10,13 @@
   const FILTRO_PADRAO = { busca: '', status: 'todos', cond: '', dataTipo: 'lancadoEm', de: '', ate: '', min: '', max: '', ordem: null, dir: 1 };
   const F = { dash: { ...FILTRO_PADRAO, ordem: null }, hist: { ...FILTRO_PADRAO, ordem: 'idx', dir: -1 } };
   try { Object.assign(F.hist, JSON.parse(localStorage.getItem('filtroHist') || '{}'), { busca: '' }); } catch {}
+  if (!/^(\d+|sem)?$/.test(F.hist.cond || '')) F.hist.cond = '';
   const lembrar = () => { try { const { busca, ...resto } = F.hist; localStorage.setItem('filtroHist', JSON.stringify(resto)); } catch {} };
-  const abertos = new Set(); // linhas expandidas (por link)
+  const abertos = new Set(); // linhas expandidas (por id do boleto)
+  let H = { total: 0, somaCentavos: 0, itens: [] }, limiteHist = 200, histVersao = -1; // histórico (vem do banco)
+  let CD = { condominios: [], linksSemCondominio: 0 }; // condomínios (vem do banco)
+  const condAbertos = new Map(); // condomínio expandido → links
+  let buscaCond = '';
 
   // ---------- Utilidades ----------
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -63,6 +68,7 @@
   const TITULOS = {
     dashboard: ['Dashboard', 'Gerencie a extração de dados e o lançamento dos boletos de forma simples e eficiente.'],
     historico: ['Histórico', 'Acompanhe todos os boletos extraídos e lançados.'],
+    condominios: ['Condomínios', 'Links vinculados a cada condomínio, prontos para reutilizar.'],
     configuracoes: ['Configurações', 'Parâmetros atuais do sistema.'],
     ajuda: ['Ajuda', 'Passo a passo para usar o sistema.']
   };
@@ -75,9 +81,10 @@
     });
     $('titulo').textContent = TITULOS[v][0];
     $('subtitulo').textContent = TITULOS[v][1];
+    if (v === 'historico') { sincronizarCampos?.(); recarregarHist?.(); }
+    if (v === 'condominios') carregarCondominios?.();
   }
   addEventListener('hashchange', rota);
-  rota();
 
   // ---------- Links / arquivo ----------
   let tLinks;
@@ -122,20 +129,23 @@
     try { await api('/api/via/abrir'); } finally { $('bVia').disabled = false; }
   };
   $('bProx').onclick = () => {
-    const i = E.boletos.findIndex(b => b.status === 'pendente' && !temProblema(b));
-    if (i < 0) return toast('Nenhum boleto pendente', 'erro');
-    lancar(i);
+    const b = E.boletos.find(b => b.status === 'pendente' && !temProblema(b));
+    if (!b) return toast('Nenhum boleto pendente', 'erro');
+    lancar(b.id);
   };
-  $('bLimparLista').onclick = async () => {
-    if (confirm('Apagar a lista de boletos? Esta ação não pode ser desfeita.')) { abertos.clear(); await api('/api/limpar'); }
+  $('bArquivar').onclick = async () => {
+    if (!confirm('Arquivar o lote atual?\nOs boletos saem do Dashboard, mas continuam salvos no Histórico.')) return;
+    const r = await api('/api/limpar');
+    if (r) toast(`${plural(r.arquivados, 'boleto arquivado', 'boletos arquivados')}. Veja no Histórico.`, 'ok');
   };
   // ---------- Busca / filtros ----------
   const debounce = (fn, ms = 150) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
-  const renderTabelas = () => { renderDashboard(); renderHistorico(); };
-  const renderAdiado = debounce(renderTabelas);
-  // O valor é gravado no ato do evento; só a renderização é adiada (evita perder a escolha).
+  const renderTabelas = () => { renderDashboard(); recarregarHist(); };
+  const dashAdiado = debounce(renderDashboard);
+  // O valor é gravado no ato do evento; só a renderização/consulta é adiada (evita perder a escolha).
   const ligar = (id, tabela, chave, ev = 'input') => $(id).addEventListener(ev, e => {
-    F[tabela][chave] = e.target.value; if (tabela === 'hist') lembrar(); renderAdiado();
+    F[tabela][chave] = e.target.value;
+    if (tabela === 'hist') { lembrar(); limiteHist = 200; histAdiado(); } else dashAdiado();
   });
   ligar('dBusca', 'dash', 'busca'); ligar('dStatus', 'dash', 'status', 'change');
   ligar('hBusca', 'hist', 'busca'); ligar('hCond', 'hist', 'cond', 'change'); ligar('hDataTipo', 'hist', 'dataTipo', 'change');
@@ -146,22 +156,24 @@
     $('hMin').value = h.min; $('hMax').value = h.max;
     $('filtros').querySelectorAll('button').forEach(x => x.classList.toggle('ativo', x.dataset.f === h.status));
   };
-  $('hLimpar').onclick = () => { Object.assign(F.hist, FILTRO_PADRAO, { ordem: 'idx', dir: -1 }); $('hCond').value = ''; lembrar(); sincronizarCampos(); renderTabelas(); };
+  $('hLimpar').onclick = () => { Object.assign(F.hist, FILTRO_PADRAO, { ordem: 'idx', dir: -1 }); $('hCond').value = ''; lembrar(); sincronizarCampos(); recarregarHist(); };
   $('filtros').onclick = e => {
     const b = e.target.closest('button[data-f]'); if (!b) return;
-    F.hist.status = b.dataset.f; lembrar(); sincronizarCampos(); renderHistorico();
+    F.hist.status = b.dataset.f; lembrar(); sincronizarCampos(); recarregarHist();
   };
+  $('hMais').onclick = () => { limiteHist += 200; recarregarHist(); };
   const ordenarPor = (tabela, thead) => $(thead).addEventListener('click', e => {
     const th = e.target.closest('th[data-sort]'); if (!th) return;
     const f = F[tabela];
     if (f.ordem === th.dataset.sort) f.dir = -f.dir; else { f.ordem = th.dataset.sort; f.dir = 1; }
-    if (tabela === 'hist') lembrar();
-    renderTabelas();
+    if (tabela === 'hist') { lembrar(); recarregarHist(); } else renderDashboard();
   });
   ordenarPor('dash', 'thDash'); ordenarPor('hist', 'thHist');
 
-  $('bCsv').onclick = () => {
-    const linhas = filtrar(E.boletos, F.hist);
+  $('bCsv').onclick = async () => {
+    const r = await consultar('/api/historico', { ...F.hist, limite: 100000 });
+    if (!r) return;
+    const linhas = r.itens.map(b => [b, b.id - 1]);
     if (!linhas.length) return toast('Nada para exportar', 'erro');
     const cel = v => { let t = String(v ?? ''); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"'; };
     const cab = ['#', 'Código', 'Condomínio', 'Unidade', 'Vencimento', 'Valor', 'Status', 'Extraído em', 'Lançado em', 'Gravado em', 'Ocorrências', 'Problemas', 'Link'];
@@ -177,26 +189,27 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
 
-  async function lancar(i) {
-    const b = E.boletos[i];
+  const acharBoleto = id => E.boletos.find(b => b.id === id) || H.itens.find(b => b.id === id);
+  async function lancar(id) {
+    const b = acharBoleto(id);
     if (!b) return;
     if (!confirm(`Lançar ${b.codIdentificador} (${b.unidade || ''})?\nConfirme que a tela Manutenção encargo está na aba ativa.`)) return;
-    const r = await api('/api/lancar', { indice: i });
+    const r = await api('/api/lancar', { id });
     if (r) toast(`Boleto ${b.codIdentificador} preenchido. Confira e grave no Via Imob.`, 'ok');
   }
 
   // Delegação de eventos nas tabelas (sem handlers inline → compatível com CSP).
   const aoClicarTabela = e => {
     const btn = e.target.closest('button[data-acao]'); if (!btn) return;
-    const i = Number(btn.dataset.i);
-    const b = E.boletos[i]; if (!b) return;
+    const id = Number(btn.dataset.id);
+    if (!acharBoleto(id)) return;
     switch (btn.dataset.acao) {
-      case 'lancar': return lancar(i);
-      case 'gravado': return api('/api/status', { indice: i, status: 'gravado' });
-      case 'pendente': return api('/api/status', { indice: i, status: 'pendente' });
+      case 'lancar': return lancar(id);
+      case 'gravado': return api('/api/status', { id, status: 'gravado' });
+      case 'pendente': return api('/api/status', { id, status: 'pendente' });
       case 'det':
-        abertos.has(b.link) ? abertos.delete(b.link) : abertos.add(b.link);
-        return render();
+        abertos.has(id) ? abertos.delete(id) : abertos.add(id);
+        renderDashboard(); return renderHistorico();
     }
   };
   $('tb').addEventListener('click', aoClicarTabela);
@@ -204,12 +217,13 @@
 
   // ---------- Render ----------
   const podeLancar = () => E.lancando === null && E.via.aberto;
-  function botoesAcao(b, i) {
+  function botoesAcao(b) {
+    const i = b.id;
     if (temProblema(b)) return '';
     const dis = podeLancar() ? '' : ' disabled';
-    if (b.status === 'lancado') return `<button type="button" class="mini" data-acao="gravado" data-i="${i}">Marcar gravado</button><button type="button" class="mini" data-acao="lancar" data-i="${i}"${dis}>Refazer</button>`;
-    if (b.status === 'gravado') return `<button type="button" class="mini" data-acao="pendente" data-i="${i}">Reabrir</button>`;
-    if (b.status === 'pendente' || b.status === 'erro') return `<button type="button" class="mini" data-acao="lancar" data-i="${i}"${dis}>Lançar</button>`;
+    if (b.status === 'lancado') return `<button type="button" class="mini" data-acao="gravado" data-id="${i}">Marcar gravado</button><button type="button" class="mini" data-acao="lancar" data-id="${i}"${dis}>Refazer</button>`;
+    if (b.status === 'gravado') return `<button type="button" class="mini" data-acao="pendente" data-id="${i}">Reabrir</button>`;
+    if (b.status === 'pendente' || b.status === 'erro') return `<button type="button" class="mini" data-acao="lancar" data-id="${i}"${dis}>Lançar</button>`;
     return '';
   }
   const tagStatus = b => {
@@ -277,35 +291,62 @@
     marcarOrdem('thDash', F.dash);
     $('dResultado').innerHTML = filtroAtivo(F.dash) ? `<b>${linhas.length}</b> de ${E.boletos.length}` : '';
     $('tb').innerHTML = linhas.map(([b, i]) => {
-      const aberto = abertos.has(b.link);
+      const aberto = abertos.has(b.id);
       return `<tr class="linha">
-        <td><button type="button" class="expandir" data-acao="det" data-i="${i}" aria-expanded="${aberto}" aria-label="Detalhes">${ico('i-chev')}</button>${esc(b.condominio || '—')}</td>
+        <td><button type="button" class="expandir" data-acao="det" data-id="${b.id}" aria-expanded="${aberto}" aria-label="Detalhes">${ico('i-chev')}</button>${esc(b.condominio || '—')}</td>
         <td>${esc(b.unidade || '—')}</td>
         <td class="num">${esc(b.codIdentificador || '—')}</td>
         <td class="num">${esc(b.vencimento || '—')}</td>
         <td class="num">${b.conferencia ? 'R$ ' + esc(b.conferencia.valorDocumento) : '—'}</td>
         <td>${tagStatus(b)}</td>
-        <td class="acoes">${botoesAcao(b, i)}</td></tr>${aberto ? detalhe(b, 7) : ''}`;
+        <td class="acoes">${botoesAcao(b)}</td></tr>${aberto ? detalhe(b, 7) : ''}`;
     }).join('') || (E.boletos.length ? linhaVazia(7, 'Nenhum boleto corresponde à busca.', '')
       : linhaVazia(7, 'Nenhum dado extraído ainda.', 'Adicione os links ou o arquivo e clique em "Iniciar Extração".'));
   }
 
-  function renderHistorico() {
-    // Lista de condomínios para o seletor (mantém a escolha atual).
-    const conds = [...new Set(E.boletos.map(b => b.condominio).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-    const chaveConds = conds.join('\n');
-    if ($('hCond').dataset.k !== chaveConds) {
-      $('hCond').dataset.k = chaveConds;
-      $('hCond').innerHTML = '<option value="">Todos</option>' + conds.map(c => `<option>${esc(c)}</option>`).join('');
+  // ---------- Histórico (consulta ao banco) ----------
+  async function consultar(url, params) {
+    const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null).map(([k, v]) => [k, String(v)]));
+    try {
+      const r = await fetch(url + '?' + q, { headers: { 'X-Token': TOKEN }, cache: 'no-store' });
+      const j = await r.json();
+      if (!r.ok) { toast(j.erro || `Erro ${r.status}`, 'erro'); return null; }
+      return j;
+    } catch { return null; }
+  }
+  const visivel = v => !document.querySelector(`.view[data-view="${v}"]`).hidden;
+  let seqHist = 0;
+  async function recarregarHist() {
+    const meu = ++seqHist;
+    const r = await consultar('/api/historico', { ...F.hist, limite: limiteHist });
+    if (!r || meu !== seqHist) return; // descarta respostas antigas
+    H = r; histVersao = r.versao; renderHistorico();
+  }
+  const histAdiado = debounce(recarregarHist, 200);
+
+  function opcoesCondominio() {
+    const sel = $('hCond');
+    const chave = CD.condominios.map(c => c.id + c.nome).join('|') + CD.linksSemCondominio;
+    if (sel.dataset.k !== chave) {
+      sel.dataset.k = chave;
+      sel.innerHTML = '<option value="">Todos</option>' + CD.condominios.map(c => `<option value="${c.id}">${esc(c.nome)}</option>`).join('') +
+        '<option value="sem">Sem condomínio</option>';
     }
-    $('hCond').value = conds.includes(F.hist.cond) ? F.hist.cond : '';
-    const linhas = filtrar(E.boletos, F.hist);
+    sel.value = F.hist.cond || '';
+    if (sel.value !== (F.hist.cond || '')) sel.value = '';
+  }
+
+  function renderHistorico() {
+    opcoesCondominio();
     marcarOrdem('thHist', F.hist);
-    $('hResultado').innerHTML = `<b>${linhas.length}</b> de ${plural(E.boletos.length, 'boleto', 'boletos')} · soma <b>${somaBRL(linhas)}</b>`;
-    $('tbHist').innerHTML = linhas.map(([b, i]) => {
-      const aberto = abertos.has(b.link);
+    const soma = (H.somaCentavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    $('hResultado').innerHTML = `<b>${H.total}</b> ${H.total === 1 ? 'boleto' : 'boletos'} · soma <b>${soma}</b>` +
+      (H.itens.length < H.total ? ` · mostrando ${H.itens.length}` : '');
+    $('hMais').hidden = H.itens.length >= H.total;
+    $('tbHist').innerHTML = H.itens.map(b => {
+      const aberto = abertos.has(b.id);
       return `<tr class="linha">
-        <td><button type="button" class="expandir" data-acao="det" data-i="${i}" aria-expanded="${aberto}" aria-label="Detalhes">${ico('i-chev')}</button>${i + 1}</td>
+        <td><button type="button" class="expandir" data-acao="det" data-id="${b.id}" aria-expanded="${aberto}" aria-label="Detalhes">${ico('i-chev')}</button>${b.id}${b.arquivado ? '' : ' <span class="tag-mini" title="Está no lote atual do Dashboard">atual</span>'}</td>
         <td class="num">${esc(b.codIdentificador || '—')}</td>
         <td>${esc(b.condominio || '—')}<div class="sub2">${esc(b.unidade || '')}</div></td>
         <td class="sub2">${ocorrenciasHtml(b)}${b.desconto ? '<br><b>Desconto:</b> ' + esc(b.desconto.join(' | ')) : ''}</td>
@@ -313,9 +354,94 @@
         <td class="num">${b.conferencia ? 'R$ ' + esc(b.conferencia.valorDocumento) : '—'}</td>
         <td class="num sub2">${b.lancadoEm ? esc(dataHora(b.lancadoEm)) : '—'}${b.gravadoEm ? '<br>Gravado ' + esc(dataHora(b.gravadoEm)) : ''}</td>
         <td>${tagStatus(b)}${temProblema(b) ? `<div class="prob">${b.problemas.map(esc).join('<br>')}</div>` : ''}</td>
-        <td class="acoes">${botoesAcao(b, i)}</td></tr>${aberto ? detalhe(b, 9) : ''}`;
+        <td class="acoes">${botoesAcao(b)}</td></tr>${aberto ? detalhe(b, 9) : ''}`;
     }).join('') || linhaVazia(9, 'Nenhum boleto encontrado.', filtroAtivo(F.hist) ? 'Ajuste ou limpe os filtros.' : '');
   }
+
+  // ---------- Condomínios ----------
+  async function carregarCondominios() {
+    const r = await consultar('/api/condominios', {});
+    if (!r) return;
+    CD = r;
+    for (const id of condAbertos.keys()) await carregarLinks(id, false);
+    opcoesCondominio(); renderCondominios();
+  }
+  async function carregarLinks(id, render = true) {
+    const r = await consultar('/api/condominios/links', { id });
+    if (r) condAbertos.set(id, r.links);
+    if (render) renderCondominios();
+  }
+  function renderCondominios() {
+    const termos = norm(buscaCond).split(/\s+/).filter(Boolean);
+    const lista = [...CD.condominios, ...(CD.linksSemCondominio ? [{ id: 'sem', nome: 'Sem condomínio', links: CD.linksSemCondominio, boletos: 0, lancados: 0 }] : [])]
+      .filter(c => termos.every(t => norm(c.nome).includes(t)));
+    $('cResultado').innerHTML = `<b>${CD.condominios.length}</b> ${CD.condominios.length === 1 ? 'condomínio' : 'condomínios'} · <b>${CD.condominios.reduce((s, c) => s + c.links, 0) + CD.linksSemCondominio}</b> links`;
+    const ocupado = !!E.extracao?.rodando;
+    $('tbCond').innerHTML = lista.map(c => {
+      const id = String(c.id), links = condAbertos.get(id);
+      const linha = `<tr class="linha">
+        <td><button type="button" class="expandir" data-c="abrir" data-cid="${id}" aria-expanded="${!!links}" aria-label="Ver links">${ico('i-chev')}</button><b>${esc(c.nome)}</b></td>
+        <td class="num">${c.links}</td><td class="num">${c.boletos}</td><td class="num">${c.lancados}</td>
+        <td class="num sub2">${c.ultimaExtracao ? esc(dataHora(c.ultimaExtracao)) : '—'}</td>
+        <td class="num sub2">${c.ultimoLancamento ? esc(dataHora(c.ultimoLancamento)) : '—'}</td>
+        <td class="acoes">
+          <button type="button" class="mini" data-c="extrair" data-cid="${id}"${!c.links || ocupado ? ' disabled' : ''}>Extrair</button>
+          <button type="button" class="mini" data-c="usar" data-cid="${id}"${c.links ? '' : ' disabled'}>Usar links</button>
+          ${id !== 'sem' ? `<button type="button" class="mini" data-c="hist" data-cid="${id}">Histórico</button>` : ''}
+        </td></tr>`;
+      if (!links) return linha;
+      const itens = links.map(l => `<li><span class="url">${esc(l.url)}</span>
+          <span class="sub2">${esc(l.unidade || '')}${l.ultimaExtracao ? ' · extraído ' + esc(dataHora(l.ultimaExtracao)) : ''}</span>
+          ${l.ultimoErro ? `<span class="prob">${esc(l.ultimoErro)}</span>` : ''}
+          <button type="button" class="mini" data-c="remover" data-lid="${l.id}" data-cid="${id}" aria-label="Remover link">Remover</button></li>`).join('');
+      return linha + `<tr class="det"><td colspan="7">
+        <ul class="links-lista">${itens || '<li class="mut">Nenhum link.</li>'}</ul>
+        <div class="vincular"><textarea data-vinc="${id}" rows="2" placeholder="Cole links para vincular a ${esc(c.nome)} (um por linha)"></textarea>
+        <button type="button" class="btn-light" data-c="vincular" data-cid="${id}">Vincular links</button></div></td></tr>`;
+    }).join('') || linhaVazia(7, 'Nenhum condomínio ainda.', 'Os condomínios aparecem aqui automaticamente após a primeira extração.');
+  }
+  $('cBusca').addEventListener('input', debounce(e => { buscaCond = e.target.value; renderCondominios(); }));
+  $('bNovoCond').onclick = async () => {
+    const nome = $('novoCond').value.trim();
+    if (!nome) return toast('Informe o nome do condomínio', 'erro');
+    if (await api('/api/condominios/criar', { nome })) { $('novoCond').value = ''; toast('Condomínio adicionado', 'ok'); carregarCondominios(); }
+  };
+  $('tbCond').addEventListener('click', async e => {
+    const btn = e.target.closest('button[data-c]'); if (!btn) return;
+    const id = btn.dataset.cid, cid = id === 'sem' ? 'sem' : Number(id);
+    const c = CD.condominios.find(x => String(x.id) === id) || { nome: 'Sem condomínio' };
+    switch (btn.dataset.c) {
+      case 'abrir':
+        if (condAbertos.has(id)) { condAbertos.delete(id); renderCondominios(); } else carregarLinks(id);
+        return;
+      case 'extrair': {
+        if (!confirm(`Extrair todos os links de ${c.nome}?`)) return;
+        const r = await api('/api/condominios/extrair', { condominioId: cid });
+        if (r) { toast(`Extração iniciada: ${plural(r.total, 'link', 'links')}`, 'ok'); location.hash = '#dashboard'; }
+        return;
+      }
+      case 'usar': {
+        const r = await consultar('/api/condominios/links', { id });
+        if (!r?.links.length) return;
+        const atual = $('links').value.trim();
+        $('links').value = (atual ? atual + '\n' : '') + `# ${c.nome}\n` + r.links.map(l => l.url).join('\n');
+        atualizarContador(); location.hash = '#dashboard';
+        toast(`${plural(r.links.length, 'link adicionado', 'links adicionados')} à caixa de extração`, 'ok');
+        return;
+      }
+      case 'hist':
+        F.hist.cond = id; lembrar(); location.hash = '#historico'; return;
+      case 'remover':
+        if (!confirm('Remover este link do condomínio? Os boletos já extraídos continuam no Histórico.')) return;
+        if (await api('/api/links/remover', { id: Number(btn.dataset.lid) })) carregarCondominios();
+        return;
+      case 'vincular': {
+        const ta = $('tbCond').querySelector(`textarea[data-vinc="${id}"]`);
+        const r = await api('/api/condominios/vincular', { condominioId: cid, texto: ta.value });
+        if (r) { toast(`${plural(r.total, 'link vinculado', 'links vinculados')} a ${c.nome}`, 'ok'); carregarCondominios(); }
+      }
+    }
+  });
 
   function renderConfig() {
     const c = E.config || {};
@@ -323,7 +449,8 @@
     const pares = [
       ['Porta', c.porta], ['Chrome', c.chrome], ['URL Via Imob', c.urlViaImob],
       ['Janela Via Imob', c.viewportViaImob ? `${c.viewportViaImob.width} × ${c.viewportViaImob.height}` : 'automática'],
-      ['Concorrência', c.concorrenciaExtracao], ['Espera por página', c.esperaMs != null ? c.esperaMs + ' ms' : '']
+      ['Concorrência', c.concorrenciaExtracao], ['Espera por página', c.esperaMs != null ? c.esperaMs + ' ms' : ''],
+      ['Banco de dados', c.banco]
     ];
     $('cfg').innerHTML = pares.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v ?? '—')}</dd>`).join('') + `<dt>Ocorrências</dt><dd>${mapa || '—'}</dd>`;
   }
@@ -341,7 +468,7 @@
     $('bPausar').querySelector('small').textContent = x.pausado ? 'Continue o processo' : 'Pause o processo atual';
     $('bPausar').querySelector('.bola').innerHTML = ico(x.pausado ? 'i-play' : 'i-pause');
     $('bProx').disabled = !podeLancar() || !pend;
-    $('bLimparLista').disabled = !!x.rodando || E.lancando !== null || !bs.length;
+    $('bArquivar').disabled = !!x.rodando || E.lancando !== null || !bs.length;
     $('viaTxt').textContent = E.via.aberto ? 'Navegador aberto' : 'Acesse o site de origem';
 
     const pw = $('progWrap');
@@ -354,6 +481,7 @@
     else if (x.rodando) [cls, icone, txt] = ['run', 'i-play', `Extraindo · ${x.feitos}/${x.total}`];
     else if (E.lancando !== null) [cls, icone, txt] = ['run', 'i-barcode', 'Lançando boleto…'];
     else if (x.erro) [cls, icone, txt] = ['err', 'i-stop', 'Erro: ' + x.erro];
+    else if (x.repetidos && !pend) txt = `${plural(x.repetidos, 'boleto já lançado', 'boletos já lançados')} antes`;
     else if (pend) txt = `${plural(pend, 'boleto pronto', 'boletos prontos')} para lançar`;
     $('badge').className = 'badge ' + cls;
     $('badge').innerHTML = ico(icone) + `<span>${esc(txt)}</span>`;
@@ -369,9 +497,12 @@
   function render() {
     renderControles();
     renderDashboard();
-    renderHistorico();
     renderConfig();
+    // Dados do banco: recarrega só a tela visível quando algo mudou.
+    if (visivel('historico') && histVersao !== E.versao) histAdiado();
+    if (visivel('condominios')) condAdiado();
   }
+  const condAdiado = debounce(carregarCondominios, 300);
 
   // ---------- Polling (204 quando nada mudou) ----------
   let timer = null, online = null;
@@ -396,5 +527,7 @@
   document.addEventListener('visibilitychange', () => { if (!document.hidden) agendar(0); });
   sincronizarCampos();
   atualizarContador();
+  carregarCondominios();
+  rota();
   tick();
 })();

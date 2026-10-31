@@ -2,6 +2,7 @@
   "name": "lb-boletos",
   "version": "1.0.0",
   "private": true,
+  "engines": { "node": ">=22.13" },
   "type": "module",
   "scripts": {
     "start": "node src/servidor.js"
