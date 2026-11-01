@@ -74,7 +74,6 @@ h1 { font-size: 42px; line-height: 1.1; margin: 0; letter-spacing: -.02em }
 
 .btn-light { display: inline-flex; align-items: center; gap: 10px; padding: 10px 18px; background: var(--card); border: 1px solid var(--bd); border-radius: 12px; font-weight: 600; box-shadow: 0 1px 3px rgba(20, 30, 60, .08); align-self: flex-start }
 .btn-light:hover:not(:disabled) { border-color: var(--bd2) }
-.btn-light.perigo { color: var(--verm) }
 
 textarea { width: 100%; min-height: 118px; resize: vertical; background: var(--card); color: var(--tx); border: 1px solid var(--bd2); border-radius: 10px; padding: 12px 15px; font-family: inherit; font-size: 16px; line-height: 1.6 }
 textarea::placeholder { color: var(--mut) }
@@ -128,17 +127,13 @@ textarea:focus { outline: none; border-color: var(--azul); box-shadow: 0 0 0 3px
 .tag { display: inline-block; padding: 3px 10px; border-radius: 99px; font-size: 12.5px; font-weight: 600; white-space: nowrap }
 .tag.pendente { background: var(--card2); color: var(--mut); border: 1px solid var(--bd) }
 .tag.lancando { background: var(--amar-s); color: var(--amar) }
-.tag.lancado { background: var(--azul-s); color: var(--azul) }
-.tag.gravado { background: var(--verde-s); color: var(--verde) }
+.tag.lancado { background: var(--verde-s); color: var(--verde) }
 .tag.erro { background: var(--verm-s); color: var(--verm) }
 .prob { color: var(--verm); font-size: 12.5px; margin-top: 4px }
 .mini { border: 1px solid var(--bd); background: var(--card); border-radius: 8px; padding: 5px 10px; font-size: 13px; font-weight: 600 }
 .mini:hover:not(:disabled) { border-color: var(--azul); color: var(--azul) }
 .mini + .mini { margin-left: 6px }
 
-.filtros { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px }
-.filtros button { border: 1px solid var(--bd); background: var(--card); border-radius: 99px; padding: 6px 14px; font-size: 14px }
-.filtros button.ativo { background: var(--azul-s); color: var(--azul); border-color: transparent; font-weight: 600 }
 
 /* ---------- Busca e filtros ---------- */
 .busca-barra { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-bottom: 14px }
@@ -168,7 +163,6 @@ nav a { gap: 14px }
 .tabela .url { font-family: ui-monospace, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; margin-top: 4px }
 .tabela td .tag { white-space: normal }
 .tabela td:first-child { white-space: nowrap }
-.tag-mini { font-size: 11px; font-weight: 600; color: var(--azul); background: var(--azul-s); border-radius: 99px; padding: 1px 7px; vertical-align: 1px }
 .tabela-wrap.alta { max-height: 66vh }
 .novo-cond input { font: inherit; font-size: 14px; color: var(--tx); background: var(--card); border: 1px solid var(--bd2); border-radius: 10px; padding: 8px 12px; min-height: 40px; width: 220px }
 .novo-cond input:focus { outline: none; border-color: var(--azul); box-shadow: 0 0 0 3px var(--azul-s) }

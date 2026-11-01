@@ -2,18 +2,18 @@
 (() => {
   const $ = id => document.getElementById(id);
   const TOKEN = document.querySelector('meta[name="token"]').content;
-  const ROTULO = { pendente: 'Pronto', lancando: 'Lançando…', lancado: 'Lançado', gravado: 'Lançado', erro: 'Erro' };
+  const ROTULO = { pendente: 'Pronto', lancando: 'Lançando…', lancado: 'Lançado', erro: 'Erro' };
   const MAX_ARQ = 2 * 1024 * 1024;
 
-  let E = { versao: -1, boletos: [], extracao: {}, via: {}, lancando: null, app: {}, config: {} };
-  // Filtros por tabela (o do histórico é lembrado entre aberturas).
-  const FILTRO_PADRAO = { busca: '', status: 'todos', cond: '', dataTipo: 'lancadoEm', de: '', ate: '', min: '', max: '', ordem: null, dir: 1 };
-  const F = { dash: { ...FILTRO_PADRAO, ordem: null }, hist: { ...FILTRO_PADRAO, ordem: 'idx', dir: -1 } };
+  let E = { versao: -1, boletos: [], extracao: {}, via: {}, lancando: null, app: {}, config: {}, rev: {} };
+  // Filtros: Dashboard (local) e Histórico (consultado no banco; lembrado entre aberturas).
+  const HIST_PADRAO = { busca: '', cond: '', dataTipo: 'lancadoEm', de: '', ate: '', min: '', max: '', ordem: 'idx', dir: -1 };
+  const F = { dash: { busca: '', status: 'todos', ordem: null, dir: 1 }, hist: { ...HIST_PADRAO } };
   try { Object.assign(F.hist, JSON.parse(localStorage.getItem('filtroHist') || '{}'), { busca: '' }); } catch {}
   if (!/^(\d+|sem)?$/.test(F.hist.cond || '')) F.hist.cond = '';
   const lembrar = () => { try { const { busca, ...resto } = F.hist; localStorage.setItem('filtroHist', JSON.stringify(resto)); } catch {} };
   const abertos = new Set(); // linhas expandidas (por id do boleto)
-  let H = { total: 0, somaCentavos: 0, itens: [] }, limiteHist = 200, histVersao = -1; // histórico (vem do banco)
+  let H = { total: 0, somaCentavos: 0, itens: [] }, limiteHist = 200, histRev = -1; // histórico (vem do banco)
   let CD = { condominios: [], linksSemCondominio: 0 }; // condomínios (vem do banco)
   const condAbertos = new Map(); // condomínio expandido → links
   let buscaCond = '';
@@ -82,9 +82,9 @@
     });
     $('titulo').textContent = TITULOS[v][0];
     $('subtitulo').textContent = TITULOS[v][1];
-    if (v === 'historico') { sincronizarCampos?.(); recarregarHist?.(); }
-    if (v === 'condominios') carregarCondominios?.();
-    if (v === 'duplicidades') carregarDup?.();
+    if (v === 'historico') { sincronizarCampos(); recarregarHist(); }
+    if (v === 'condominios') carregarCondominios();
+    if (v === 'duplicidades') carregarDup();
   }
   addEventListener('hashchange', rota);
 
@@ -148,7 +148,6 @@
   };
   // ---------- Busca / filtros ----------
   const debounce = (fn, ms = 150) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
-  const renderTabelas = () => { renderDashboard(); recarregarHist(); };
   const dashAdiado = debounce(renderDashboard);
   // O valor é gravado no ato do evento; só a renderização/consulta é adiada (evita perder a escolha).
   const ligar = (id, tabela, chave, ev = 'input') => $(id).addEventListener(ev, e => {
@@ -163,7 +162,7 @@
     $('hBusca').value = h.busca; $('hDataTipo').value = h.dataTipo; $('hDe').value = h.de; $('hAte').value = h.ate;
     $('hMin').value = h.min; $('hMax').value = h.max;
   };
-  $('hLimpar').onclick = () => { Object.assign(F.hist, FILTRO_PADRAO, { ordem: 'idx', dir: -1 }); $('hCond').value = ''; lembrar(); sincronizarCampos(); recarregarHist(); };
+  $('hLimpar').onclick = () => { Object.assign(F.hist, HIST_PADRAO); $('hCond').value = ''; lembrar(); sincronizarCampos(); recarregarHist(); };
   $('hMais').onclick = () => { limiteHist += 200; recarregarHist(); };
   const ordenarPor = (tabela, thead) => $(thead).addEventListener('click', e => {
     const th = e.target.closest('th[data-sort]'); if (!th) return;
@@ -176,14 +175,13 @@
   $('bCsv').onclick = async () => {
     const r = await consultar('/api/historico', { ...F.hist, limite: 100000 });
     if (!r) return;
-    const linhas = r.itens.map(b => [b, b.id - 1]);
-    if (!linhas.length) return toast('Nada para exportar', 'erro');
+    if (!r.itens.length) return toast('Nada para exportar', 'erro');
     const cel = v => { let t = String(v ?? ''); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"'; };
-    const cab = ['#', 'Código', 'Condomínio', 'Unidade', 'Vencimento', 'Valor', 'Status', 'Extraído em', 'Lançado em', 'Ocorrências', 'Problemas', 'Link'];
-    const corpo = linhas.map(([b, i]) => [i + 1, b.codIdentificador, b.condominio, b.unidade, b.vencimento, b.conferencia?.valorDocumento,
-      ROTULO[statusDe(b)] || statusDe(b), dataHora(b.extraidoEm), dataHora(b.lancadoEm),
+    const cab = ['Registro', 'Código', 'Condomínio', 'Unidade', 'Vencimento', 'Valor', 'Extraído em', 'Lançado em', 'Ocorrências lançadas', 'Linha digitável', 'Link'];
+    const corpo = r.itens.map(b => [b.id, b.codIdentificador, b.condominio, b.unidade, b.vencimento, b.conferencia?.valorDocumento,
+      dataHora(b.extraidoEm), dataHora(b.lancadoEm),
       (b.ocorrencias || []).map(o => `${o.nome || o.itemOriginal}: ${o.valor}${o.historico ? ' (' + o.historico + ')' : ''}`).join(' | '),
-      (b.problemas || []).join(' | '), b.link].map(cel).join(';'));
+      b.linhaDigitavel, b.link].map(cel).join(';'));
     const blob = new Blob(['\ufeff' + [cab.map(cel).join(';'), ...corpo].join('\r\n')], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -235,7 +233,7 @@
   const podeLancar = () => E.lancando === null && E.via.aberto;
   function botoesAcao(b) {
     const i = b.id;
-    if (b.status === 'lancado' || b.status === 'gravado') return `<button type="button" class="mini" data-acao="desfazer" data-id="${i}">Desfazer</button>`;
+    if (b.status === 'lancado') return `<button type="button" class="mini" data-acao="desfazer" data-id="${i}">Desfazer</button>`;
     if (b.status === 'lancando') return '';
     const excluir = `<button type="button" class="mini" data-acao="excluir" data-id="${i}" title="Excluir da lista">Excluir</button>`;
     if (temProblema(b)) return excluir;
@@ -266,48 +264,39 @@
   const linhaVazia = (colunas, titulo, texto) =>
     `<tr class="vazio"><td colspan="${colunas}">${ico('i-empty')}<strong>${titulo}</strong>${texto}</td></tr>`;
 
-  // ---------- Filtragem ----------
+  // ---------- Filtragem (Dashboard) ----------
   const numBR = v => { const n = parseFloat(String(v ?? '').trim().replace(/\./g, '').replace(',', '.')); return isNaN(n) ? null : n; };
   const valorDe = b => numBR(b.conferencia?.valorDocumento ?? b.valorTotal);
-  const pad = n => String(n).padStart(2, '0');
-  const diaISO = iso => { const d = new Date(iso); return iso && !isNaN(d) ? `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` : null; };
-  const diaBR = s => { const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s || ''); return m ? `${m[3]}-${m[2]}-${m[1]}` : null; };
-  const dataCampo = (b, campo) => campo === 'vencimento' ? diaBR(b.vencimento) : diaISO(b[campo]);
+  const diaBR = s => { const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s || ''); return m ? `${m[3]}-${m[2]}-${m[1]}` : ''; };
   const norm = s => String(s ?? '').normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
   const textoBusca = b => norm([b.condominio, b.unidade, b.codIdentificador, b.linhaDigitavel, b.vencimento, b.conferencia?.valorDocumento, b.link,
     ...(b.ocorrencias || []).flatMap(o => [o.nome, o.itemOriginal, o.historico])].join(' '));
   const ORDEM = {
-    idx: (b, i) => i, cod: b => norm(b.codIdentificador), cond: b => norm(b.condominio) + ' ' + norm(b.unidade), unid: b => norm(b.unidade),
-    venc: b => diaBR(b.vencimento) || '', valor: b => valorDe(b) ?? -1, lanc: b => b.lancadoEm || '', status: b => statusDe(b)
+    cod: b => norm(b.codIdentificador), cond: b => norm(b.condominio) + ' ' + norm(b.unidade), unid: b => norm(b.unidade),
+    venc: b => diaBR(b.vencimento), valor: b => valorDe(b) ?? -1, status: b => statusDe(b)
   };
   function filtrar(lista, f) {
     const termos = norm(f.busca).split(/\s+/).filter(Boolean);
-    const min = numBR(f.min), max = numBR(f.max);
-    const linhas = lista.map((b, i) => [b, i]).filter(([b]) => {
+    const linhas = lista.filter(b => {
       if (f.status === 'problema' ? !temProblema(b) : f.status !== 'todos' && (temProblema(b) || b.status !== f.status)) return false;
-      if (f.cond && b.condominio !== f.cond) return false;
-      if (termos.length) { const t = textoBusca(b); if (!termos.every(x => t.includes(x))) return false; }
-      if (f.de || f.ate) { const d = dataCampo(b, f.dataTipo); if (!d || (f.de && d < f.de) || (f.ate && d > f.ate)) return false; }
-      if (min !== null || max !== null) { const v = valorDe(b); if (v === null || (min !== null && v < min) || (max !== null && v > max)) return false; }
-      return true;
+      return !termos.length || termos.every(x => textoBusca(b).includes(x));
     });
-    if (f.ordem && ORDEM[f.ordem]) {
-      const k = ORDEM[f.ordem];
-      linhas.sort(([a, ia], [b, ib]) => { const x = k(a, ia), y = k(b, ib); return (x < y ? -1 : x > y ? 1 : ia - ib) * f.dir; });
-    }
+    const k = ORDEM[f.ordem];
+    if (k) linhas.sort((a, b) => { const x = k(a), y = k(b); return (x < y ? -1 : x > y ? 1 : a.id - b.id) * f.dir; });
     return linhas;
   }
   const marcarOrdem = (thead, f) => $(thead).querySelectorAll('th[data-sort]').forEach(th =>
     th.setAttribute('aria-sort', th.dataset.sort === f.ordem ? (f.dir > 0 ? 'ascending' : 'descending') : 'none'));
-  const somaBRL = linhas => linhas.reduce((s, [b]) => s + (valorDe(b) || 0), 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-  const filtroAtivo = f => f.busca || f.status !== 'todos' || f.cond || f.de || f.ate || f.min || f.max;
+  const filtroAtivo = f => f.busca || (f.status && f.status !== 'todos') || f.cond || f.de || f.ate || f.min || f.max;
+  // Só troca o HTML quando muda (evita redesenhar a tabela a cada consulta e perder o hover).
+  const definirHTML = (el, html) => { if (el._html !== html) { el._html = html; el.innerHTML = html; } };
 
   function renderDashboard() {
     const conferido = boletoConferencia()?.b;
     const linhas = filtrar(E.boletos, F.dash);
     marcarOrdem('thDash', F.dash);
     $('dResultado').innerHTML = filtroAtivo(F.dash) ? `<b>${linhas.length}</b> de ${E.boletos.length}` : '';
-    $('tb').innerHTML = linhas.map(([b, i]) => {
+    definirHTML($('tb'), linhas.map(b => {
       const aberto = abertos.has(b.id);
       return `<tr class="linha${conferido?.id === b.id ? ' sel' : ''}" data-id="${b.id}">
         <td><button type="button" class="expandir" data-acao="det" data-id="${b.id}" aria-expanded="${aberto}" aria-label="Detalhes">${ico('i-chev')}</button>${esc(b.condominio || '—')}</td>
@@ -318,7 +307,7 @@
         <td>${tagStatus(b)}</td>
         <td class="acoes">${botoesAcao(b)}</td></tr>${aberto ? detalhe(b, 7) : ''}`;
     }).join('') || (E.boletos.length ? linhaVazia(7, 'Nenhum boleto corresponde à busca.', '')
-      : linhaVazia(7, 'Nenhum dado extraído ainda.', 'Adicione os links ou o arquivo e clique em "Iniciar Extração".'));
+      : linhaVazia(7, 'Nenhum dado extraído ainda.', 'Adicione os links ou o arquivo e clique em "Iniciar Extração".')));
   }
 
   // ---------- Histórico (consulta ao banco) ----------
@@ -337,7 +326,7 @@
     const meu = ++seqHist;
     const r = await consultar('/api/historico', { ...F.hist, limite: limiteHist });
     if (!r || meu !== seqHist) return; // descarta respostas antigas
-    H = r; histVersao = r.versao; renderHistorico();
+    H = r; histRev = E.rev.hist; renderHistorico();
   }
   const histAdiado = debounce(recarregarHist, 200);
 
@@ -360,10 +349,10 @@
     $('hResultado').innerHTML = `<b>${H.total}</b> ${H.total === 1 ? 'boleto' : 'boletos'} · soma <b>${soma}</b>` +
       (H.itens.length < H.total ? ` · mostrando ${H.itens.length}` : '');
     $('hMais').hidden = H.itens.length >= H.total;
-    $('tbHist').innerHTML = H.itens.map(b => {
+    definirHTML($('tbHist'), H.itens.map(b => {
       const aberto = abertos.has(b.id);
       return `<tr class="linha">
-        <td><button type="button" class="expandir" data-acao="det" data-id="${b.id}" aria-expanded="${aberto}" aria-label="Detalhes">${ico('i-chev')}</button>${b.id}${b.arquivado ? '' : ' <span class="tag-mini" title="Está no lote atual do Dashboard">atual</span>'}</td>
+        <td><button type="button" class="expandir" data-acao="det" data-id="${b.id}" aria-expanded="${aberto}" aria-label="Detalhes">${ico('i-chev')}</button>${b.id}</td>
         <td class="num">${esc(b.codIdentificador || '—')}</td>
         <td>${esc(b.condominio || '—')}<div class="sub2">${esc(b.unidade || '')}</div></td>
         <td class="sub2">${ocorrenciasHtml(b)}${b.desconto ? '<br><b>Desconto:</b> ' + esc(b.desconto.join(' | ')) : ''}</td>
@@ -372,14 +361,16 @@
         <td class="num sub2">${b.lancadoEm ? esc(dataHora(b.lancadoEm)) : '—'}</td>
         <td>${tagStatus(b)}${temProblema(b) ? `<div class="prob">${b.problemas.map(esc).join('<br>')}</div>` : ''}</td>
         <td class="acoes">${botoesAcao(b)}</td></tr>${aberto ? detalhe(b, 9) : ''}`;
-    }).join('') || linhaVazia(9, 'Nenhum boleto encontrado.', filtroAtivo(F.hist) ? 'Ajuste ou limpe os filtros.' : '');
+    }).join('') || linhaVazia(9, 'Nenhum boleto encontrado.', filtroAtivo(F.hist) ? 'Ajuste ou limpe os filtros.' : ''));
   }
 
   // ---------- Condomínios ----------
+  let condRev = -1;
   async function carregarCondominios() {
+    const rev = E.rev.cond;
     const r = await consultar('/api/condominios', {});
     if (!r) return;
-    CD = r;
+    CD = r; condRev = rev;
     for (const id of condAbertos.keys()) await carregarLinks(id, false);
     opcoesCondominio(); renderCondominios();
   }
@@ -394,7 +385,7 @@
       .filter(c => termos.every(t => norm(c.nome).includes(t)));
     $('cResultado').innerHTML = `<b>${CD.condominios.length}</b> ${CD.condominios.length === 1 ? 'condomínio' : 'condomínios'} · <b>${CD.condominios.reduce((s, c) => s + c.links, 0) + CD.linksSemCondominio}</b> links`;
     const ocupado = !!E.extracao?.rodando;
-    $('tbCond').innerHTML = lista.map(c => {
+    definirHTML($('tbCond'), lista.map(c => {
       const id = String(c.id), links = condAbertos.get(id);
       const linha = `<tr class="linha">
         <td><button type="button" class="expandir" data-c="abrir" data-cid="${id}" aria-expanded="${!!links}" aria-label="Ver links">${ico('i-chev')}</button><b>${esc(c.nome)}</b></td>
@@ -415,7 +406,7 @@
         <ul class="links-lista">${itens || '<li class="mut">Nenhum link.</li>'}</ul>
         <div class="vincular"><textarea data-vinc="${id}" rows="2" placeholder="Cole links para vincular a ${esc(c.nome)} (um por linha)"></textarea>
         <button type="button" class="btn-light" data-c="vincular" data-cid="${id}">Vincular links</button></div></td></tr>`;
-    }).join('') || linhaVazia(7, 'Nenhum condomínio ainda.', 'Os condomínios aparecem aqui automaticamente após a primeira extração.');
+    }).join('') || linhaVazia(7, 'Nenhum condomínio ainda.', 'Os condomínios aparecem aqui automaticamente após a primeira extração.'));
   }
   $('cBusca').addEventListener('input', debounce(e => { buscaCond = e.target.value; renderCondominios(); }));
   $('bNovoCond').onclick = async () => {
@@ -461,11 +452,12 @@
   });
 
   // ---------- Duplicidades ----------
-  let DUP = { total: 0, itens: [] }, buscaDup = '', dupVersao = -1;
+  let DUP = { total: 0, itens: [] }, buscaDup = '', dupRev = -1;
   async function carregarDup() {
+    const rev = E.rev.dup;
     const r = await consultar('/api/duplicidades', { busca: buscaDup });
     if (!r) return;
-    DUP = r; dupVersao = E.duplicidades; renderDup();
+    DUP = r; dupRev = rev; renderDup();
   }
   const dupAdiado = debounce(carregarDup, 250);
   function renderDup() {
@@ -490,7 +482,7 @@
     if (btn.dataset.d === 'remover') { if (await api('/api/duplicidades/remover', { id: Number(btn.dataset.did) })) carregarDup(); return; }
     // Ver original: lançado → Histórico; pendente → Dashboard (busca pelo código).
     if (btn.dataset.st === 'lancado') {
-      Object.assign(F.hist, FILTRO_PADRAO, { ordem: 'idx', dir: -1, busca: btn.dataset.cod }); lembrar(); location.hash = '#historico';
+      Object.assign(F.hist, HIST_PADRAO, { busca: btn.dataset.cod }); lembrar(); location.hash = '#historico';
     } else { F.dash.busca = btn.dataset.cod; $('dBusca').value = btn.dataset.cod; location.hash = '#dashboard'; renderDashboard(); }
   });
 
@@ -651,15 +643,17 @@
   $('dlgBoleto').addEventListener('click', e => { if (e.target === $('dlgBoleto')) $('dlgBoleto').close(); });
   $('dlgBoleto').addEventListener('close', () => { if (urlFoto) { URL.revokeObjectURL(urlFoto); urlFoto = null; } $('dlgImg').removeAttribute('src'); });
 
+  let configMostrada = false;
   function render() {
     renderControles();
     renderDashboard();
     renderConferencia();
-    renderConfig();
-    // Dados do banco: recarrega só a tela visível quando algo mudou.
-    if (visivel('historico') && histVersao !== E.versao) histAdiado();
-    if (visivel('condominios')) condAdiado();
-    if (visivel('duplicidades') && dupVersao !== E.duplicidades) dupAdiado();
+    if (!configMostrada) { renderConfig(); configMostrada = true; }
+    // Dados do banco: recarrega só a tela visível e só quando aquela área mudou.
+    if (visivel('historico') && histRev !== E.rev.hist) histAdiado();
+    // Condomínios também alimentam o filtro do Histórico.
+    if ((visivel('condominios') || visivel('historico')) && condRev !== E.rev.cond) condAdiado();
+    if (visivel('duplicidades') && dupRev !== E.rev.dup) dupAdiado();
   }
   const condAdiado = debounce(carregarCondominios, 300);
 

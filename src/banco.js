@@ -23,9 +23,11 @@ const centavos = v => {
 const dataBR = s => { const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s || ''); return m ? `${m[3]}-${m[2]}-${m[1]}` : null; };
 const DIA = /^\d{4}-\d{2}-\d{2}$/;
 const escLike = s => s.replace(/[\\%_]/g, c => '\\' + c);
+// Linha digitável comparada só pelos dígitos (espaços/pontos diferentes não escapam da checagem de duplicidade).
+const soDigitos = s => String(s ?? '').replace(/\D/g, '') || null;
 
 // Campos que vivem em colunas próprias (não vão no JSON "dados").
-const COLUNAS = ['id', 'status', 'extraidoEm', 'lancadoEm', 'gravadoEm', 'arquivado', 'condominioId', 'linkId'];
+const COLUNAS = ['id', 'status', 'extraidoEm', 'lancadoEm', 'gravadoEm', 'arquivado', 'condominioId', 'linkId', 'temCaptura'];
 
 export function abrirBanco(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -63,6 +65,7 @@ export function abrirBanco(dir) {
       lancado_em TEXT,
       gravado_em TEXT,
       arquivado INTEGER NOT NULL DEFAULT 0,
+      tem_captura INTEGER NOT NULL DEFAULT 0,
       busca TEXT NOT NULL DEFAULT '',
       dados TEXT NOT NULL
     );
@@ -83,8 +86,17 @@ export function abrirBanco(dir) {
     CREATE INDEX IF NOT EXISTS ix_bol_linha ON boletos(linha_digitavel);
     CREATE INDEX IF NOT EXISTS ix_bol_link ON boletos(link_id);
     CREATE INDEX IF NOT EXISTS ix_bol_cond ON boletos(condominio_id);
-    CREATE INDEX IF NOT EXISTS ix_bol_arq ON boletos(arquivado);
+    DROP INDEX IF EXISTS ix_bol_arq;
+    CREATE INDEX IF NOT EXISTS ix_bol_status ON boletos(status);
     CREATE INDEX IF NOT EXISTS ix_bol_lanc ON boletos(lancado_em);
+  `);
+
+  // Migrações de versões anteriores (idempotentes).
+  const colunas = new Set(db.prepare('PRAGMA table_info(boletos)').all().map(c => c.name));
+  if (!colunas.has('tem_captura')) db.exec('ALTER TABLE boletos ADD COLUMN tem_captura INTEGER NOT NULL DEFAULT 0');
+  db.exec(`
+    UPDATE boletos SET tem_captura = 1 WHERE tem_captura = 0 AND json_extract(dados, '$.temCaptura') = 1;
+    UPDATE boletos SET linha_digitavel = replace(replace(linha_digitavel, ' ', ''), '.', '') WHERE linha_digitavel GLOB '*[ .]*';
   `);
 
   // Prepared statements reaproveitados (mais rápido e imune a SQL injection).
@@ -102,17 +114,17 @@ export function abrirBanco(dir) {
       ON CONFLICT(url) DO UPDATE SET condominio_id = excluded.condominio_id`),
     linkRemover: db.prepare('DELETE FROM links WHERE id = ?'),
     bolPorLinha: db.prepare('SELECT * FROM boletos WHERE linha_digitavel = ? ORDER BY id DESC LIMIT 1'),
-    bolErroDoLink: db.prepare("SELECT * FROM boletos WHERE link_id = ? AND arquivado = 0 AND linha_digitavel IS NULL ORDER BY id DESC LIMIT 1"),
+    bolErroDoLink: db.prepare("SELECT * FROM boletos WHERE link_id = ? AND status <> 'lancado' AND linha_digitavel IS NULL ORDER BY id DESC LIMIT 1"),
     bolPorId: db.prepare('SELECT * FROM boletos WHERE id = ?'),
     bolInserir: db.prepare(`
-      INSERT INTO boletos (link_id, condominio_id, linha_digitavel, status, problema, valor_centavos, vencimento, extraido_em, lancado_em, gravado_em, arquivado, busca, dados)
-      VALUES ($link, $cond, $linha, $status, $problema, $valor, $venc, $extraido, $lancado, $gravado, $arquivado, $busca, $dados) RETURNING id`),
+      INSERT INTO boletos (link_id, condominio_id, linha_digitavel, status, problema, valor_centavos, vencimento, extraido_em, lancado_em, tem_captura, busca, dados)
+      VALUES ($link, $cond, $linha, $status, $problema, $valor, $venc, $extraido, $lancado, $captura, $busca, $dados) RETURNING id`),
     bolAtualizar: db.prepare(`
       UPDATE boletos SET link_id = $link, condominio_id = $cond, linha_digitavel = $linha, status = $status, problema = $problema,
-        valor_centavos = $valor, vencimento = $venc, extraido_em = $extraido, lancado_em = $lancado, gravado_em = $gravado,
-        arquivado = $arquivado, busca = $busca, dados = $dados WHERE id = $id`),
+        valor_centavos = $valor, vencimento = $venc, extraido_em = $extraido, lancado_em = $lancado, tem_captura = $captura,
+        busca = $busca, dados = $dados WHERE id = $id`),
     lote: db.prepare("SELECT * FROM boletos WHERE status <> 'lancado' ORDER BY id"),
-    limparPendentes: db.prepare("DELETE FROM boletos WHERE status NOT IN ('lancado', 'lancando')"),
+    limparPendentes: db.prepare("DELETE FROM boletos WHERE status NOT IN ('lancado', 'lancando') RETURNING id"),
     excluir: db.prepare("DELETE FROM boletos WHERE id = ? AND status NOT IN ('lancado', 'lancando')"),
     jaLancado: db.prepare("SELECT id, lancado_em FROM boletos WHERE linha_digitavel = ? AND status = 'lancado' AND id <> ? LIMIT 1"),
     dupInserir: db.prepare('INSERT INTO duplicidades (url, boleto_id, motivo, detectado_em, busca, dados) VALUES (?, ?, ?, ?, ?, ?)'),
@@ -137,18 +149,17 @@ export function abrirBanco(dir) {
 
   const linhaParaObj = r => r && ({
     ...JSON.parse(r.dados), id: r.id, status: r.status, extraidoEm: r.extraido_em, lancadoEm: r.lancado_em,
-    gravadoEm: r.gravado_em, arquivado: !!r.arquivado, condominioId: r.condominio_id, linkId: r.link_id
+    condominioId: r.condominio_id, linkId: r.link_id, temCaptura: !!r.tem_captura
   });
 
   const parametros = b => {
     const dados = {};
     for (const [k, v] of Object.entries(b)) if (!COLUNAS.includes(k) && v !== undefined) dados[k] = v;
     return {
-      $link: b.linkId ?? null, $cond: b.condominioId ?? null, $linha: b.linhaDigitavel || null,
+      $link: b.linkId ?? null, $cond: b.condominioId ?? null, $linha: soDigitos(b.linhaDigitavel),
       $status: b.status || 'pendente', $problema: b.problemas?.length ? 1 : 0,
       $valor: centavos(b.conferencia?.valorDocumento ?? b.valorTotal), $venc: dataBR(b.vencimento),
-      $extraido: b.extraidoEm || null, $lancado: b.lancadoEm || null, $gravado: b.gravadoEm || null,
-      $arquivado: b.arquivado ? 1 : 0, $dados: JSON.stringify(dados),
+      $extraido: b.extraidoEm || null, $lancado: b.lancadoEm || null, $captura: b.temCaptura ? 1 : 0, $dados: JSON.stringify(dados),
       $busca: norm([b.condominio, b.unidade, b.codIdentificador, b.linhaDigitavel, b.vencimento,
         b.conferencia?.valorDocumento, b.link, ...(b.ocorrencias || []).flatMap(o => [o.nome, o.itemOriginal, o.historico])].filter(Boolean).join(' '))
     };
@@ -171,9 +182,13 @@ export function abrirBanco(dir) {
     const condominioId = idCondominio(b.condominio);
     const linkId = st.linkUpsert.get({ $url: b.link, $cond: condominioId, $unid: b.unidade || null, $agora: agora(),
       $erro: b.erroExtracao || null }).id;
-    const novo = { ...b, condominioId, linkId, arquivado: false };
-    if (b.linhaDigitavel) {
-      const ex = linhaParaObj(st.bolPorLinha.get(b.linhaDigitavel));
+    const novo = { ...b, condominioId, linkId };
+    const linha = soDigitos(b.linhaDigitavel);
+    if (linha) {
+      const ex = linhaParaObj(st.bolPorLinha.get(linha));
+      // Ainda não lançado e com problema (ex.: mapeamento corrigido no config): atualiza com os dados novos.
+      if (ex && ex.status !== 'lancado' && ex.status !== 'lancando' && ex.problemas?.length)
+        return { boleto: atualizar({ ...novo, id: ex.id, temCaptura: ex.temCaptura }), duplicado: null };
       if (ex) {
         const motivo = ex.status === 'lancado'
           ? `Boleto já lançado${ex.lancadoEm ? ' em ' + dataCurta(ex.lancadoEm) : ''} (registro #${ex.id})`
@@ -269,7 +284,7 @@ export function abrirBanco(dir) {
       if (!b || !b.link) continue;
       const condominioId = idCondominio(b.condominio);
       const linkId = st.linkUpsert.get({ $url: b.link, $cond: condominioId, $unid: b.unidade || null, $agora: b.extraidoEm || agora(), $erro: b.erroExtracao || null }).id;
-      inserir({ ...b, condominioId, linkId, arquivado: false, status: b.status === 'lancando' ? 'pendente' : (b.status || 'pendente') });
+      inserir({ ...b, condominioId, linkId, status: b.status === 'lancando' ? 'pendente' : (b.status || 'pendente') });
       n++;
     }
     return n;
@@ -298,9 +313,14 @@ export function abrirBanco(dir) {
     loteAtual: () => st.lote.all().map(linhaParaObj),
     porId: id => linhaParaObj(st.bolPorId.get(Number(id))),
     registrarExtracao, atualizar, historico,
-    limparPendentes: () => st.limparPendentes.run().changes,
+    limparPendentes: () => st.limparPendentes.all().map(r => r.id),
     excluir: id => st.excluir.run(Number(id)).changes,
-    jaLancado: (linha, id) => (linha ? st.jaLancado.get(linha, Number(id) || 0) : null),
+    jaLancado: (linha, id) => (soDigitos(linha) ? st.jaLancado.get(soDigitos(linha), Number(id) || 0) : null),
+    // Pré-checagem barata (antes da foto): já existe boleto com essa linha que não seria atualizado?
+    seriaDuplicado: linha => {
+      const ex = soDigitos(linha) && linhaParaObj(st.bolPorLinha.get(soDigitos(linha)));
+      return !!ex && !(ex.status !== 'lancado' && ex.status !== 'lancando' && ex.problemas?.length);
+    },
     duplicidades, contarDuplicidades: () => st.dupContar.get().n,
     removerDuplicidade: id => st.dupRemover.run(Number(id)).changes,
     limparDuplicidades: () => st.dupLimpar.run().changes,

@@ -3,6 +3,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
@@ -16,6 +17,24 @@ const { version: versaoApp } = JSON.parse(fs.readFileSync(path.join(raiz, 'packa
 const porta = Number(cfg.porta);
 if (!Number.isInteger(porta) || porta < 1024 || porta > 65535) throw new Error('config.json: "porta" inválida');
 
+process.on('unhandledRejection', e => console.error('Erro não tratado:', e));
+process.on('uncaughtException', e => console.error('Exceção não tratada:', e));
+
+// App já aberto? Só abre a janela dele e sai — antes de tocar no banco (não interfere no que está rodando).
+let servidorPrincipal = false;
+const portaEmUso = () => new Promise(ok => {
+  const s = net.connect({ port: porta, host: '127.0.0.1' });
+  s.setTimeout(800, () => { s.destroy(); ok(false); });
+  s.once('connect', () => { s.destroy(); ok(true); });
+  s.once('error', () => ok(false));
+});
+if (await portaEmUso()) {
+  console.log('App já está aberto; abrindo janela.');
+  abrirJanela();
+  await new Promise(r => setTimeout(r, 3000));
+  process.exit(0);
+}
+
 // ---------- Estado ----------
 const estado = {
   versao: 0,
@@ -26,7 +45,11 @@ const estado = {
   extracao: { rodando: false, pausado: false, total: 0, feitos: 0, duplicados: 0, fila: 0, erro: null },
   boletos: [],
   via: { aberto: false },
-  lancando: null // id do boleto em lançamento
+  lancando: null, // id do boleto em lançamento
+  passoLancamento: null,
+  duplicidades: 0,
+  // Revisões: a interface só recarrega Histórico/Condomínios/Duplicidades quando a respectiva muda.
+  rev: { hist: 0, cond: 0, dup: 0 }
 };
 // ---------- Banco local ----------
 const dirDados = process.env.LB_DADOS || path.join(raiz, 'dados');
@@ -68,6 +91,7 @@ const mudou = (persistir = true) => {
   if (persistir) estado.atualizadoEm = new Date().toISOString();
 };
 const salvarBoleto = b => { banco.atualizar(b); mudou(); };
+const tocar = (...areas) => { for (const a of areas) estado.rev[a]++; };
 const boletoDoLote = id => estado.boletos.find(b => b.id === id);
 const erro = (msg, code) => Object.assign(new Error(msg), { code });
 
@@ -127,7 +151,9 @@ async function restaurarSessao(ctx) {
   }
 }
 
-async function abrirVia() {
+let abrindoVia = null; // evita abrir o mesmo perfil duas vezes (clique duplo)
+const abrirVia = () => (abrindoVia ??= abrirViaAgora().finally(() => { abrindoVia = null; }));
+async function abrirViaAgora() {
   if (viaCtx) {
     try { await viaCtx.pages()[0]?.bringToFront(); estado.via.aberto = true; mudou(false); return; } catch { viaCtx = null; }
   }
@@ -175,6 +201,7 @@ async function lancar(id) {
   // Trava contra lançamento duplo: mesma linha digitável já lançada antes.
   const dup = banco.jaLancado(b.linhaDigitavel, b.id);
   if (dup) throw erro(`Este boleto já foi lançado (registro #${dup.id}). Lançamento bloqueado.`, 409);
+  if (!viaCtx) throw erro('Abra o navegador do Via Imob antes de lançar', 409);
   estado.lancando = id;
   estado.passoLancamento = 'Preparando…';
   let page = null;
@@ -188,6 +215,7 @@ async function lancar(id) {
     b.status = 'lancado';
     b.lancadoEm = new Date().toISOString();
     estado.boletos = estado.boletos.filter(x => x.id !== b.id); // sai da lista → Histórico
+    tocar('hist', 'cond');
   } catch (e) {
     b.status = 'erro'; b.erroLancamento = String(e.message).split('\n')[0];
   } finally {
@@ -210,7 +238,8 @@ const persistirExtracao = () => {
 
 function processarFila() {
   if (ctrl) return;
-  const c = ctrl = { pausado: false, parado: false, temMais: () => banco.filaContar() > emAndamento.size };
+  const c = ctrl = { pausado: false, parado: false, temMais: () => banco.filaContar() > emAndamento.size,
+    seriaDuplicado: linha => banco.seriaDuplicado(linha) };
   Object.assign(ex(), { rodando: true, pausado: false, erro: null });
   persistirExtracao(); mudou(false);
   const proximo = () => {
@@ -222,25 +251,29 @@ function processarFila() {
     novo.extraidoEm = new Date().toISOString();
     try {
       const { boleto, duplicado } = banco.registrarExtracao(novo);
-      if (duplicado) { ex().duplicados++; estado.duplicidades = banco.contarDuplicidades(); }
+      if (duplicado) { ex().duplicados++; estado.duplicidades = banco.contarDuplicidades(); tocar('dup'); }
       else {
         if (captura) { try { fs.writeFileSync(arqCaptura(boleto.id), captura); boleto.temCaptura = true; banco.atualizar(boleto); } catch {} }
         const i = estado.boletos.findIndex(x => x.id === boleto.id);
         if (i >= 0) estado.boletos[i] = boleto; else estado.boletos.push(boleto);
       }
-      banco.filaRemover(url); // só sai da fila depois de gravado
+      tocar('cond');
     } catch (e) { console.error('Falha ao gravar boleto:', e.message); }
+    // Sai da fila mesmo se a gravação falhar (evita repetir o mesmo link para sempre).
+    banco.filaRemover(url);
     emAndamento.delete(url);
     ex().feitos++; persistirExtracao(); mudou();
-  }, c, ex().fila)
+  }, c)
     .catch(e => { if (!c.parado) ex().erro = String(e.message).split('\n')[0]; })
     .finally(() => {
       emAndamento.clear();
       if (ctrl === c) ctrl = null;
-      if (c.parado) banco.filaLimpar();
       ex().rodando = false;
-      // Sobrou fila sem ter sido parado (ex.: falha do Chrome): fica pausada para retomar.
-      ex().pausado = !c.parado && banco.filaContar() > 0;
+      const resta = banco.filaContar();
+      // Links que entraram na fila no finalzinho (ou depois do Parar): continua com eles.
+      if (resta && !ex().erro && (c.parado || !c.pausado)) { ex().pausado = false; mudou(false); processarFila(); return; }
+      // Sobrou fila por falha (ex.: Chrome não abriu): fica pausada para retomar.
+      ex().pausado = resta > 0;
       persistirExtracao(); mudou(false);
     });
 }
@@ -314,7 +347,6 @@ const lerCorpo = req => new Promise((ok, falha) => {
   req.on('error', falha);
 });
 const idValido = id => Number.isInteger(id) && id > 0;
-const LIMITE_LINKS_CORPO = 1000;
 const tokenOk = req => {
   const t = String(req.headers['x-token'] || '');
   return t.length === TOKEN.length && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(TOKEN));
@@ -338,7 +370,7 @@ const rotas = {
     if (!ctrl && !banco.filaContar()) throw erro('Nenhuma extração em andamento', 409);
     banco.filaLimpar();
     if (ctrl) { ctrl.parado = true; ctrl.pausado = false; await ctrl.browser?.close().catch(() => {}); }
-    Object.assign(ex(), { pausado: false, fila: 0, retomada: false });
+    Object.assign(ex(), { pausado: false, fila: 0, retomada: false, total: 0, feitos: 0, duplicados: 0 });
     banco.kvGravar('extracao', null); mudou(false);
     return { ok: true };
   },
@@ -346,7 +378,9 @@ const rotas = {
   'POST /api/limpar': async () => {
     if (estado.extracao.rodando) throw erro('Extração em andamento', 409);
     if (estado.lancando !== null) throw erro('Lançamento em andamento', 409);
-    const n = banco.limparPendentes(); estado.boletos = banco.loteAtual(); mudou(); return { ok: true, removidos: n };
+    const ids = banco.limparPendentes();
+    for (const id of ids) fs.rmSync(arqCaptura(id), { force: true });
+    estado.boletos = banco.loteAtual(); tocar('cond'); mudou(); return { ok: true, removidos: ids.length };
   },
   'POST /api/via/abrir': async () => { await abrirVia(); return { ok: true }; },
   'POST /api/lancar': async ({ id }) => {
@@ -360,51 +394,47 @@ const rotas = {
     if (estado.lancando === id) throw erro('Boleto em lançamento', 409);
     if (!banco.excluir(id)) throw erro('Só é possível excluir boletos ainda não lançados', 409);
     fs.rmSync(arqCaptura(id), { force: true });
-    estado.boletos = estado.boletos.filter(x => x.id !== id); mudou(); return { ok: true };
+    estado.boletos = estado.boletos.filter(x => x.id !== id); tocar('cond'); mudou(); return { ok: true };
   },
   // Desfaz um lançamento (ex.: não foi gravado no Via Imob): volta para a lista.
   'POST /api/desfazer': async ({ id }) => {
     if (!idValido(id)) throw erro('Boleto inválido', 400);
     const b = banco.porId(id);
     if (!b || b.status !== 'lancado') throw erro('Boleto não está lançado', 409);
-    b.status = 'pendente'; delete b.lancadoEm; delete b.gravadoEm;
-    estado.boletos.push(b); salvarBoleto(b); return { ok: true };
+    b.status = 'pendente'; delete b.lancadoEm;
+    estado.boletos.push(b); tocar('hist', 'cond'); salvarBoleto(b); return { ok: true };
   },
   'POST /api/duplicidades/remover': async ({ id }) => {
     if (!idValido(id)) throw erro('Registro inválido', 400);
-    banco.removerDuplicidade(id); estado.duplicidades = banco.contarDuplicidades(); mudou(false); return { ok: true };
+    banco.removerDuplicidade(id); estado.duplicidades = banco.contarDuplicidades(); tocar('dup'); mudou(false); return { ok: true };
   },
   'POST /api/duplicidades/limpar': async () => {
-    banco.limparDuplicidades(); estado.duplicidades = 0; mudou(false); return { ok: true };
+    banco.limparDuplicidades(); estado.duplicidades = 0; tocar('dup'); mudou(false); return { ok: true };
   },
   // ---- Condomínios / links ----
   'POST /api/condominios/criar': async ({ nome }) => {
-    const id = banco.criarCondominio(String(nome ?? '').slice(0, 200)); mudou(false); return { ok: true, id };
+    const id = banco.criarCondominio(String(nome ?? '').slice(0, 200)); tocar('cond'); mudou(false); return { ok: true, id };
   },
   'POST /api/condominios/vincular': async ({ condominioId, texto }) => {
-    const urls = separarLinks(String(texto ?? '')).slice(0, LIMITE_LINKS_CORPO);
+    const urls = separarLinks(String(texto ?? ''));
     if (!urls.length) throw erro('Nenhum link encontrado', 400);
     if (condominioId !== 'sem' && !idValido(condominioId)) throw erro('Condomínio inválido', 400);
-    const n = banco.vincularLinks(condominioId, urls); mudou(false); return { ok: true, total: n };
+    const n = banco.vincularLinks(condominioId, urls); tocar('cond'); mudou(false); return { ok: true, total: n };
   },
   'POST /api/links/remover': async ({ id }) => {
     if (!idValido(id)) throw erro('Link inválido', 400);
-    banco.removerLink(id); mudou(false); return { ok: true };
+    banco.removerLink(id); tocar('cond'); mudou(false); return { ok: true };
   },
   'POST /api/condominios/extrair': async ({ condominioId }) => {
     if (condominioId !== 'sem' && !idValido(condominioId)) throw erro('Condomínio inválido', 400);
     const urls = banco.linksDe(condominioId).map(l => l.url);
     if (!urls.length) throw erro('Este condomínio não tem links', 400);
-    const r = iniciarExtracao(urls);
-    return { ok: true, total: r.novos, ...r };
+    return { ok: true, ...iniciarExtracao(urls) };
   }
 };
 
 const consultas = {
-  '/api/historico': q => {
-    const r = banco.historico(Object.fromEntries(q));
-    return { ...r, versao: estado.versao };
-  },
+  '/api/historico': q => banco.historico(Object.fromEntries(q)),
   '/api/condominios': () => banco.condominios(),
   '/api/duplicidades': q => banco.duplicidades(Object.fromEntries(q)),
   '/api/condominios/links': q => {
@@ -480,11 +510,9 @@ function abrirJanela() {
   filho.on('exit', () => { if (Date.now() - inicio > 5000 && servidorPrincipal) encerrar(); });
 }
 
-let servidorPrincipal = false;
 servidor.on('error', e => {
-  // Já há um servidor rodando nesta porta: só abre a janela dele e sai.
-  if (e.code === 'EADDRINUSE') { console.log('App já está aberto; abrindo janela.'); abrirJanela(); setTimeout(() => process.exit(0), 3000); }
-  else { console.error(e); process.exit(1); }
+  console.error(e.code === 'EADDRINUSE' ? `A porta ${porta} está ocupada por outro programa. Troque "porta" no config.json.` : e);
+  process.exit(1);
 });
 servidor.listen(porta, '127.0.0.1', () => {
   servidorPrincipal = true;

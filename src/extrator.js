@@ -9,7 +9,7 @@ const raiz = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pagina = fs.readFileSync(path.join(raiz, 'src', 'pagina.js'), 'utf8');
 const modelo = fs.readFileSync(path.join(raiz, 'src', 'lancamento.modelo.js'), 'utf8');
 
-export const MAX_LINKS = 1000;
+const MAX_LINKS = 1000;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const primeiraLinha = e => String(e?.message || e).split('\n')[0].slice(0, 300);
 
@@ -29,16 +29,13 @@ export const criarMapeador = mapa => {
 };
 
 /**
- * @param {string[] | (() => string|null)} fonte  lista de links ou função que entrega o próximo link (fila persistente)
+ * Processa links até a fila acabar.
+ * @param {() => string|null} proximo  entrega o próximo link da fila (ou null quando acabou)
  * @param {object} cfg
- * @param {(url:string, boleto:object) => void} onItem
- * @param {{pausado:boolean, parado:boolean, browser?:any}} ctrl  controle de pausa/parada
- * @param {number} [estimativa]  quantidade de links (define a concorrência)
+ * @param {(url:string, boleto:object, captura:Buffer|null) => void} onItem
+ * @param {{pausado:boolean, parado:boolean, browser?:any, temMais?:()=>boolean, seriaDuplicado?:(linha:string)=>boolean}} ctrl
  */
-export async function extrair(fonte, cfg, onItem, ctrl = { pausado: false, parado: false }, estimativa) {
-  const lista = Array.isArray(fonte) ? [...fonte] : null;
-  const proximo = lista ? () => lista.shift() ?? null : fonte;
-  const quantos = lista ? lista.length : (estimativa || 1);
+export async function extrair(proximo, cfg, onItem, ctrl) {
   const nomeDe = criarMapeador(cfg.mapaOcorrencias);
   const browser = await chromium.launch({ executablePath: cfg.chrome, headless: true });
   ctrl.browser = browser;
@@ -81,7 +78,8 @@ export async function extrair(fonte, cfg, onItem, ctrl = { pausado: false, parad
         ocorrencias.filter(o => !o.nome).forEach(o => problemas.push(`Sem mapeamento: "${o.itemOriginal}" (config.json)`));
 
         if (ctrl.parado) break;
-        const captura = await foto(page);
+        // Duplicado não precisa de foto (economiza a etapa mais lenta).
+        const captura = ctrl.seriaDuplicado?.(d.linhaDigitavel) ? null : await foto(page);
         if (ctrl.parado) break;
         onItem(url, { link: url, itensRecibo: d.itensRecibo, condominio: d.condominio, unidade: d.unidade, vencimento: d.vencimento, codIdentificador: d.codIdentificador,
           linhaDigitavel: d.linhaDigitavel, desconto: d.desconto, valorTotal: d.conferencia.valorDocumento,
@@ -94,7 +92,8 @@ export async function extrair(fonte, cfg, onItem, ctrl = { pausado: false, parad
     }
   };
   try {
-    const n = Math.min(Math.max(1, cfg.concorrenciaExtracao | 0 || 3), 8, Math.max(1, quantos));
+    // Trabalhadores sem link para pegar simplesmente terminam.
+    const n = Math.min(Math.max(1, cfg.concorrenciaExtracao | 0 || 3), 8);
     await Promise.all(Array.from({ length: n }, trabalhador));
   } finally {
     ctrl.browser = null;
