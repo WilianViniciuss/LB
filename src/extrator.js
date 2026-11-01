@@ -32,22 +32,16 @@ export const criarMapeador = mapa => {
  * Processa links até a fila acabar.
  * @param {() => string|null} proximo  entrega o próximo link da fila (ou null quando acabou)
  * @param {object} cfg
- * @param {(url:string, boleto:object, captura:Buffer|null) => void} onItem
- * @param {{pausado:boolean, parado:boolean, browser?:any, temMais?:()=>boolean, seriaDuplicado?:(linha:string)=>boolean}} ctrl
+ * @param {(url:string, boleto:object) => void} onItem
+ * @param {{pausado:boolean, parado:boolean, browser?:any, temMais?:()=>boolean}} ctrl
  */
 export async function extrair(proximo, cfg, onItem, ctrl) {
   const nomeDe = criarMapeador(cfg.mapaOcorrencias);
   const browser = await chromium.launch({ executablePath: cfg.chrome, headless: true });
   ctrl.browser = browser;
   const ctx = await browser.newContext({ ignoreHTTPSErrors: true, acceptDownloads: false, serviceWorkers: 'block' });
-  // Sem captura, não baixa imagens/fontes (só o HTML importa). Com captura, carrega para a foto ficar fiel.
-  const capturar = cfg.capturarBoleto !== false;
-  const bloquear = capturar ? ['media'] : ['image', 'font', 'media'];
-  await ctx.route('**/*', r => bloquear.includes(r.request().resourceType()) ? r.abort() : r.continue());
-  const foto = async page => {
-    if (!capturar || !page) return null;
-    try { return await page.screenshot({ type: 'jpeg', quality: 72, fullPage: true, timeout: 10000 }); } catch { return null; }
-  };
+  // Só o HTML importa: não baixa imagens, fontes nem mídia (extração mais rápida).
+  await ctx.route('**/*', r => ['image', 'font', 'media'].includes(r.request().resourceType()) ? r.abort() : r.continue());
   const trabalhador = async () => {
     while (!ctrl.parado) {
       // Pausado: espera — a menos que não reste mais nada a fazer (aí encerra normalmente).
@@ -78,16 +72,13 @@ export async function extrair(proximo, cfg, onItem, ctrl) {
         ocorrencias.filter(o => !o.nome).forEach(o => problemas.push(`Sem mapeamento: "${o.itemOriginal}" (config.json)`));
 
         if (ctrl.parado) break;
-        // Duplicado não precisa de foto (economiza a etapa mais lenta).
-        const captura = ctrl.seriaDuplicado?.(d.linhaDigitavel) ? null : await foto(page);
-        if (ctrl.parado) break;
         onItem(url, { link: url, itensRecibo: d.itensRecibo, condominio: d.condominio, unidade: d.unidade, vencimento: d.vencimento, codIdentificador: d.codIdentificador,
           linhaDigitavel: d.linhaDigitavel, desconto: d.desconto, valorTotal: d.conferencia.valorDocumento,
-          ocorrencias, conferencia: d.conferencia, problemas, status: 'pendente' }, captura);
+          ocorrencias, conferencia: d.conferencia, problemas, status: 'pendente' });
       } catch (e) {
         if (ctrl.parado) break;
         const msg = primeiraLinha(e);
-        onItem(url, { link: url, erroExtracao: msg, problemas: ['Falha na extração: ' + msg], ocorrencias: [], status: 'erro' }, await foto(page));
+        onItem(url, { link: url, erroExtracao: msg, problemas: ['Falha na extração: ' + msg], ocorrencias: [], status: 'erro' });
       } finally { await page?.close().catch(() => {}); }
     }
   };

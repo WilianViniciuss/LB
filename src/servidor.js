@@ -41,7 +41,7 @@ const estado = {
   app: { versao: versaoApp },
   config: { chrome: cfg.chrome, porta, urlViaImob: cfg.urlViaImob, viewportViaImob: cfg.viewportViaImob,
     concorrenciaExtracao: cfg.concorrenciaExtracao, esperaMs: cfg.esperaMs, mapaOcorrencias: cfg.mapaOcorrencias,
-    lancamento: cfg.lancamento, capturarBoleto: cfg.capturarBoleto !== false, diasCapturas: cfg.diasCapturas || 90 },
+    lancamento: cfg.lancamento, diasCapturas: cfg.diasCapturas || 90 },
   atualizadoEm: new Date().toISOString(),
   extracao: { rodando: false, pausado: false, total: 0, feitos: 0, duplicados: 0, fila: 0, erro: null },
   boletos: [],
@@ -55,17 +55,18 @@ const estado = {
 // ---------- Banco local ----------
 const dirDados = process.env.LB_DADOS || path.join(raiz, 'dados');
 const banco = abrirBanco(dirDados);
-// Capturas (foto da página do boleto): dados/capturas/<id>.jpg, apagadas após N dias.
+// Fotos da tela de erro do Via Imob (dados/capturas/<id>-erro.jpg), apagadas após N dias.
 const dirCapturas = path.join(dirDados, 'capturas');
 fs.mkdirSync(dirCapturas, { recursive: true });
-const arqCaptura = (id, erro = false) => path.join(dirCapturas, `${Number(id)}${erro ? '-erro' : ''}.jpg`);
-const apagarCapturas = ids => { for (const id of ids) { fs.rmSync(arqCaptura(id), { force: true }); fs.rmSync(arqCaptura(id, true), { force: true }); } };
+const arqCaptura = id => path.join(dirCapturas, `${Number(id)}-erro.jpg`);
+const apagarCapturas = ids => { for (const id of ids) fs.rmSync(arqCaptura(id), { force: true }); };
 function limparCapturasAntigas() {
   const limite = Date.now() - (Number(cfg.diasCapturas) || 90) * 86400000;
   try {
     for (const f of fs.readdirSync(dirCapturas)) {
       const arq = path.join(dirCapturas, f);
-      if (/^\d+(-erro)?\.jpg$/.test(f) && fs.statSync(arq).mtimeMs < limite) fs.rmSync(arq, { force: true });
+      // Fotos de boleto de versões anteriores (<id>.jpg) não são mais usadas: removidas.
+      if (/^\d+\.jpg$/.test(f) || (/^\d+-erro\.jpg$/.test(f) && fs.statSync(arq).mtimeMs < limite)) fs.rmSync(arq, { force: true });
     }
   } catch {}
 }
@@ -225,7 +226,7 @@ async function lancar(id) {
     page = await abaAtiva();
     page.on('console', aoLog);
     page.on('dialog', aoDialogo);
-    b.status = 'lancando'; delete b.erroLancamento; delete b.capturaErro; fs.rmSync(arqCaptura(b.id, true), { force: true });
+    b.status = 'lancando'; delete b.erroLancamento; delete b.capturaErro; fs.rmSync(arqCaptura(b.id), { force: true });
     salvarBoleto(b);
     const opc = cfg.lancamento || {};
     await page.evaluate(gerarScript(b, { rapido: opc.rapido !== false, verificar: opc.verificarAvisos !== false }));
@@ -247,7 +248,7 @@ async function lancar(id) {
     if (page) {
       try {
         const img = (await fotoErro) || await page.screenshot({ type: 'jpeg', quality: 75, timeout: 5000 });
-        fs.writeFileSync(arqCaptura(b.id, true), img); b.capturaErro = true;
+        fs.writeFileSync(arqCaptura(b.id), img); b.capturaErro = true;
       } catch {}
     }
   } finally {
@@ -271,8 +272,7 @@ const persistirExtracao = () => {
 
 function processarFila() {
   if (ctrl) return;
-  const c = ctrl = { pausado: false, parado: false, temMais: () => banco.filaContar() > emAndamento.size,
-    seriaDuplicado: linha => banco.seriaDuplicado(linha) };
+  const c = ctrl = { pausado: false, parado: false, temMais: () => banco.filaContar() > emAndamento.size };
   Object.assign(ex(), { rodando: true, pausado: false, erro: null });
   persistirExtracao(); mudou(false);
   const proximo = () => {
@@ -280,13 +280,12 @@ function processarFila() {
     if (url) emAndamento.add(url);
     return url;
   };
-  extrair(proximo, cfg, (url, novo, captura) => {
+  extrair(proximo, cfg, (url, novo) => {
     novo.extraidoEm = new Date().toISOString();
     try {
       const { boleto, duplicado } = banco.registrarExtracao(novo);
       if (duplicado) { ex().duplicados++; estado.duplicidades = banco.contarDuplicidades(); tocar('dup'); }
       else {
-        if (captura) { try { fs.writeFileSync(arqCaptura(boleto.id), captura); boleto.temCaptura = true; banco.atualizar(boleto); } catch {} }
         const i = estado.boletos.findIndex(x => x.id === boleto.id);
         if (i >= 0) estado.boletos[i] = boleto; else estado.boletos.push(boleto);
       }
@@ -510,7 +509,7 @@ const servidor = http.createServer(async (req, res) => {
       if (url.pathname === '/api/captura') {
         const id = url.searchParams.get('id');
         if (!/^\d+$/.test(id || '')) return json(res, { erro: 'id inválido' }, 400);
-        let img; try { img = fs.readFileSync(arqCaptura(id, url.searchParams.get('tipo') === 'erro')); } catch { return json(res, { erro: 'Captura não disponível' }, 404); }
+        let img; try { img = fs.readFileSync(arqCaptura(id)); } catch { return json(res, { erro: 'Captura não disponível' }, 404); }
         return responder(res, 200, img, 'image/jpeg');
       }
       if (url.pathname === '/api/estado') {

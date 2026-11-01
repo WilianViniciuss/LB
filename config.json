@@ -7,7 +7,6 @@
   "viewportViaImob": { "width": 940, "height": 588 },
   "concorrenciaExtracao": 3,
   "esperaMs": 1500,
-  "capturarBoleto": true,
   "lancamento": { "rapido": true, "verificarAvisos": true, "pularComErro": true },
   "diasCapturas": 90,
   "mapaOcorrencias": [

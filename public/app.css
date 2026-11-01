@@ -216,7 +216,14 @@ nav a { gap: 14px }
 .dlg-h b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .dlg-h a { text-decoration: none; color: var(--tx); align-self: center }
 .dlg-h .icon-btn { width: 40px; height: 40px; font-size: 22px; box-shadow: none; border: 1px solid var(--bd) }
-.dlg-corpo { overflow: auto; max-height: calc(92vh - 66px); background: #fff }
+.dlg-corpo { overflow: auto; max-height: calc(92vh - 66px) }
+.dlg-corpo img { background: #fff }
+.dlg-dados { padding: 16px 20px 20px; display: grid; gap: 18px }
+.dlg-dados h3 { font-size: 13px; margin: 0 0 8px; color: var(--mut); text-transform: uppercase; letter-spacing: .04em }
+.dlg-dados h3 small { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--mut2) }
+.dlg-dados ul { margin: 0; padding-left: 20px }
+.rec th { text-align: left; font-size: 12.5px; color: var(--mut); font-weight: 600; padding: 6px 4px; border-bottom: 1px solid var(--bd2) }
+.ok-txt { color: var(--verde); font-weight: 700 } .nao-txt { color: var(--verm); font-weight: 700 }
 .dlg-corpo img { display: block; width: 100%; height: auto }
 .dlg-corpo p { padding: 24px; margin: 0 }
 @media (max-width: 1280px) { .conf-grid { grid-template-columns: 1fr 1fr } .conf-grid > section:last-child { grid-column: 1 / -1 } }
@@ -289,3 +296,4 @@ nav a { gap: 14px }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important } }
 .lanc li.total { list-style: none; margin: 4px 0 0 -20px; border-top: 1px solid var(--bd2); padding-top: 8px }
+.rec th:last-child { text-align: right }

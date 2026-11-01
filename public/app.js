@@ -225,8 +225,8 @@
           if (r) { toast('Lançamento desfeito: boleto voltou para a lista', 'ok'); recarregarHist(); }
         }
         return;
-      case 'foto': return abrirFoto(acharBoleto(id));
-      case 'fotoErro': return abrirFoto(acharBoleto(id), true);
+      case 'dados': return abrirDados(acharBoleto(id));
+      case 'fotoErro': return abrirFotoErro(acharBoleto(id));
       case 'det':
         abertos.has(id) ? abertos.delete(id) : abertos.add(id);
         renderDashboard(); return renderHistorico();
@@ -262,7 +262,7 @@
       b.conferencia && `<li>Conferência: soma ${esc(b.conferencia.somaCalc)} · recibo ${esc(b.conferencia.totalRecibo)} · documento ${esc(b.conferencia.valorDocumento)} · linha ${esc(b.conferencia.valorLinha)}</li>`,
       ...(b.problemas || []).map(p => `<li class="prob">${esc(p)}</li>`),
       `<li>Extraído: ${esc(dataHora(b.extraidoEm))} · Lançado: ${esc(dataHora(b.lancadoEm))}</li>`,
-      `<li>Link: <span class="sub2">${esc(b.link)}</span> <button type="button" class="mini" data-acao="foto" data-id="${b.id}">Ver boleto original</button>${b.capturaErro ? ` <button type="button" class="mini" data-acao="fotoErro" data-id="${b.id}">Ver tela do erro</button>` : ''}</li>`
+      `<li>Link: <span class="sub2">${esc(b.link)}</span> <button type="button" class="mini" data-acao="dados" data-id="${b.id}">Ver dados extraídos</button>${b.capturaErro ? ` <button type="button" class="mini" data-acao="fotoErro" data-id="${b.id}">Ver tela do erro</button>` : ''}</li>`
     ].filter(Boolean).join('');
     return `<tr class="det"><td colspan="${colunas}"><ul>${itens}</ul></td></tr>`;
   }
@@ -543,7 +543,7 @@
       ['Lançamento', [(c.lancamento?.rapido !== false ? 'rápido (espera a resposta do Via Imob)' : 'tempos fixos'),
         (c.lancamento?.verificarAvisos !== false ? 'verifica avisos' : 'sem verificação de avisos'),
         (c.lancamento?.pularComErro !== false ? 'com aviso: fecha e vai para o próximo' : 'com aviso: para')].join(' · ')],
-      ['Foto do boleto', c.capturarBoleto ? `sim, guardada por ${c.diasCapturas} dias` : 'não'],
+      ['Foto da tela de erro', `guardada por ${c.diasCapturas} dias`],
       ['Banco de dados', c.banco]
     ];
     $('cfg').innerHTML = pares.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v ?? '—')}</dd>`).join('') + `<dt>Ocorrências</dt><dd>${mapa || '—'}</dd>`;
@@ -630,7 +630,7 @@
       if (/identificador/i.test(passo)) etapa = 0; else if (/barras/i.test(passo)) etapa = 1;
       else { const m = /Ocorrência (\d+) de/.exec(passo); if (m) etapa = 1 + Number(m[1]); else if (/Conclu/i.test(passo)) etapa = 99; }
     }
-    const chave = JSON.stringify([b.id, b.status, passo, c.modo, b.temCaptura, b.capturaErro, b.erroLancamento]);
+    const chave = JSON.stringify([b.id, b.status, passo, c.modo, b.capturaErro, b.erroLancamento]);
     if (chave === chaveConf) return; // nada mudou: não redesenha
     chaveConf = chave;
 
@@ -671,22 +671,57 @@
       (doc !== null ? `<span class="check${checks.every(([, v]) => ok(v)) ? '' : ' nao'}">Valor do documento: R$ ${esc(b.conferencia.valorDocumento)}</span>` : '') +
       (b.problemas || []).map(p => `<span class="check nao">⚠ ${esc(p)}</span>`).join('') +
       (b.erroLancamento ? `<span class="check nao">⚠ Último lançamento: ${esc(b.erroLancamento)}</span>` : '');
-    $('bVerBoleto').onclick = () => abrirFoto(b);
+    $('bVerBoleto').onclick = () => abrirDados(b);
     $('bVerErro').hidden = !b.capturaErro;
-    $('bVerErro').onclick = () => abrirFoto(b, true);
+    $('bVerErro').onclick = () => abrirFotoErro(b);
   }
 
-  // ---------- Boleto original (captura feita na extração) ----------
+  // ---------- Janela: todos os dados extraídos / foto da tela de erro ----------
   let urlFoto = null;
-  async function abrirFoto(b, erro = false) {
-    if (!b) return;
-    $('dlgTitulo').textContent = (erro ? 'Tela do erro · ' : '') + ([b.condominio, b.unidade, b.codIdentificador].filter(Boolean).join(' · ') || 'Boleto');
+  function abrirJanela(b, titulo) {
+    $('dlgTitulo').textContent = titulo + ' · ' + ([b.condominio, b.unidade, b.codIdentificador].filter(Boolean).join(' · ') || `registro #${b.id}`);
     const link = /^https?:\/\//i.test(b.link || '') ? b.link : null;
     $('dlgLink').hidden = !link; if (link) $('dlgLink').href = link;
-    $('dlgImg').hidden = true; $('dlgVazio').hidden = true;
+    $('dlgImg').hidden = true; $('dlgVazio').hidden = true; $('dlgDados').hidden = true;
     $('dlgBoleto').showModal();
+  }
+  const tabela = (cab, linhas, rodape) => `<table class="rec"><thead><tr>${cab.map(c => `<th>${c}</th>`).join('')}</tr></thead>
+    <tbody>${linhas.map(l => `<tr>${l.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody>${rodape ? `<tfoot><tr>${rodape.map(c => `<td>${c}</td>`).join('')}</tr></tfoot>` : ''}</table>`;
+  function abrirDados(b) {
+    if (!b) return;
+    abrirJanela(b, 'Dados extraídos');
+    const cf = b.conferencia, ocs = b.ocorrencias || [], itens = b.itensRecibo || [];
+    const doc = cf ? centavos(cf.valorDocumento) : null;
+    const marca = v => doc === null ? '' : centavos(v) === doc ? ' <span class="ok-txt">✓</span>' : ' <span class="nao-txt">✗</span>';
+    const ident = [['Condomínio', b.condominio], ['Unidade', b.unidade], ['Cód. identificador', b.codIdentificador],
+      ['Vencimento', b.vencimento], ['Valor do documento', cf && 'R$ ' + cf.valorDocumento], ['Linha digitável', b.linhaDigitavel],
+      ['Código de barras', linhaParaBarras(b.linhaDigitavel)], ['Link', b.link], ['Status', ROTULO[statusDe(b)] || b.status],
+      ['Extraído em', b.extraidoEm && dataHora(b.extraidoEm)], ['Lançado em', b.lancadoEm && dataHora(b.lancadoEm)]];
+    $('dlgDados').innerHTML = `
+      <section><h3>Identificação</h3><dl class="cfg mini-dl">${ident.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v || '—')}</dd>`).join('')}</dl></section>
+      <section><h3>Itens do recibo <small>como estão no link</small></h3>${itens.length
+        ? tabela(['Item', 'Valor'], itens.map(i => [esc(i.item), 'R$ ' + esc(i.valor)]), ['Total dos itens', 'R$ ' + brl(itens.reduce((s, i) => s + centavos(i.valor), 0))])
+        : '<p class="mut">Itens não disponíveis (boleto extraído numa versão anterior — extraia de novo para ver).</p>'}</section>
+      <section><h3>Será lançado no Via Imob</h3>${ocs.length
+        ? tabela(['Ocorrência no Via Imob', 'Item do recibo', 'Valor', 'Histórico'],
+          ocs.map(o => [o.nome ? esc(o.nome) : '<span class="erro-map">SEM MAPEAMENTO</span>', esc(o.itemOriginal), 'R$ ' + esc(o.valor), esc(o.historico || '—')]),
+          ['Total a lançar', '', 'R$ ' + brl(ocs.reduce((s, o) => s + centavos(o.valor), 0)), ''])
+        : '<p class="mut">Nenhuma ocorrência.</p>'}</section>
+      ${cf ? `<section><h3>Conferência dos totais</h3><dl class="cfg mini-dl">
+        <dt>Soma calculada</dt><dd>R$ ${esc(cf.somaCalc)}${marca(cf.somaCalc)}</dd>
+        <dt>Total do recibo</dt><dd>R$ ${esc(cf.totalRecibo)}${marca(cf.totalRecibo)}</dd>
+        <dt>Valor da linha digitável</dt><dd>R$ ${esc(cf.valorLinha)}${marca(cf.valorLinha)}</dd>
+        <dt>Valor do documento</dt><dd>R$ ${esc(cf.valorDocumento)}</dd></dl></section>` : ''}
+      ${b.desconto ? `<section><h3>Desconto / instruções</h3><ul>${b.desconto.map(d => `<li>${esc(d)}</li>`).join('')}</ul></section>` : ''}
+      ${b.problemas?.length || b.erroLancamento ? `<section><h3>Problemas</h3><ul>${[...(b.problemas || []), ...(b.erroLancamento ? ['Lançamento: ' + b.erroLancamento] : [])]
+        .map(p => `<li class="prob">${esc(p)}</li>`).join('')}</ul></section>` : ''}`;
+    $('dlgDados').hidden = false;
+  }
+  async function abrirFotoErro(b) {
+    if (!b) return;
+    abrirJanela(b, 'Tela do erro');
     try {
-      const r = await fetch(`/api/captura?id=${b.id}${erro ? '&tipo=erro' : ''}`, { headers: { 'X-Token': TOKEN }, cache: 'no-store' });
+      const r = await fetch('/api/captura?id=' + b.id, { headers: { 'X-Token': TOKEN }, cache: 'no-store' });
       if (!r.ok) throw 0;
       if (urlFoto) URL.revokeObjectURL(urlFoto);
       urlFoto = URL.createObjectURL(await r.blob());

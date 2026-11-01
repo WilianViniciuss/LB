@@ -95,7 +95,9 @@ export function abrirBanco(dir) {
   const colunas = new Set(db.prepare('PRAGMA table_info(boletos)').all().map(c => c.name));
   if (!colunas.has('tem_captura')) db.exec('ALTER TABLE boletos ADD COLUMN tem_captura INTEGER NOT NULL DEFAULT 0');
   db.exec(`
-    UPDATE boletos SET tem_captura = 1 WHERE tem_captura = 0 AND json_extract(dados, '$.temCaptura') = 1;
+    -- Foto do boleto foi descontinuada.
+    UPDATE boletos SET tem_captura = 0 WHERE tem_captura = 1;
+    UPDATE boletos SET dados = json_remove(dados, '$.temCaptura') WHERE json_extract(dados, '$.temCaptura') IS NOT NULL;
     UPDATE boletos SET linha_digitavel = replace(replace(linha_digitavel, ' ', ''), '.', '') WHERE linha_digitavel GLOB '*[ .]*';
   `);
 
@@ -151,7 +153,7 @@ export function abrirBanco(dir) {
 
   const linhaParaObj = r => r && ({
     ...JSON.parse(r.dados), id: r.id, status: r.status, extraidoEm: r.extraido_em, lancadoEm: r.lancado_em,
-    condominioId: r.condominio_id, linkId: r.link_id, temCaptura: !!r.tem_captura
+    condominioId: r.condominio_id, linkId: r.link_id
   });
 
   const parametros = b => {
@@ -161,7 +163,7 @@ export function abrirBanco(dir) {
       $link: b.linkId ?? null, $cond: b.condominioId ?? null, $linha: soDigitos(b.linhaDigitavel),
       $status: b.status || 'pendente', $problema: b.problemas?.length ? 1 : 0,
       $valor: centavos(b.conferencia?.valorDocumento ?? b.valorTotal), $venc: dataBR(b.vencimento),
-      $extraido: b.extraidoEm || null, $lancado: b.lancadoEm || null, $captura: b.temCaptura ? 1 : 0, $dados: JSON.stringify(dados),
+      $extraido: b.extraidoEm || null, $lancado: b.lancadoEm || null, $captura: 0, $dados: JSON.stringify(dados),
       $busca: norm([b.condominio, b.unidade, b.codIdentificador, b.linhaDigitavel, b.vencimento,
         b.conferencia?.valorDocumento, b.link, ...(b.ocorrencias || []).flatMap(o => [o.nome, o.itemOriginal, o.historico])].filter(Boolean).join(' '))
     };
@@ -190,7 +192,7 @@ export function abrirBanco(dir) {
       const ex = linhaParaObj(st.bolPorLinha.get(linha));
       // Ainda não lançado e com problema (ex.: mapeamento corrigido no config): atualiza com os dados novos.
       if (ex && ex.status !== 'lancado' && ex.status !== 'lancando' && ex.problemas?.length)
-        return { boleto: atualizar({ ...novo, id: ex.id, temCaptura: ex.temCaptura }), duplicado: null };
+        return { boleto: atualizar({ ...novo, id: ex.id }), duplicado: null };
       if (ex) {
         const motivo = ex.status === 'lancado'
           ? `Boleto já lançado${ex.lancadoEm ? ' em ' + dataCurta(ex.lancadoEm) : ''} (registro #${ex.id})`
@@ -321,11 +323,6 @@ export function abrirBanco(dir) {
     excluirLancados: transacao(ids => ids.flatMap(id => st.excluirLancado.all(Number(id)).map(r => r.id))),
     excluir: id => st.excluir.run(Number(id)).changes,
     jaLancado: (linha, id) => (soDigitos(linha) ? st.jaLancado.get(soDigitos(linha), Number(id) || 0) : null),
-    // Pré-checagem barata (antes da foto): já existe boleto com essa linha que não seria atualizado?
-    seriaDuplicado: linha => {
-      const ex = soDigitos(linha) && linhaParaObj(st.bolPorLinha.get(soDigitos(linha)));
-      return !!ex && !(ex.status !== 'lancado' && ex.status !== 'lancando' && ex.problemas?.length);
-    },
     duplicidades, contarDuplicidades: () => st.dupContar.get().n,
     removerDuplicidade: id => st.dupRemover.run(Number(id)).changes,
     limparDuplicidades: () => st.dupLimpar.run().changes,
