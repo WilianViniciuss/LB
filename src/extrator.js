@@ -101,8 +101,8 @@ export async function extrair(proximo, cfg, onItem, ctrl) {
   }
 }
 
-export const gerarScript = b => {
-  const data = { codIdentificador: b.codIdentificador, linhaDigitavel: b.linhaDigitavel,
+export const gerarScript = (b, { rapido = true, verificar = true } = {}) => {
+  const data = { rapido, verificar, codIdentificador: b.codIdentificador, linhaDigitavel: b.linhaDigitavel,
     ocorrencias: b.ocorrencias.map(({ nome, valor, historico }) => ({ nome, valor, historico })) };
   // JSON escapado: impede que "</script>" ou separadores de linha quebrem o script injetado.
   const literal = JSON.stringify(data, null, 2).replace(/[<\u2028\u2029]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));

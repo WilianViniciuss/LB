@@ -134,7 +134,7 @@
         <div class="card-h">
           <span class="ico roxo"><svg><use href="#i-barcode"/></svg></span>
           <div><h2>Conferência do Lançamento <span id="confModo" class="badge run"></span></h2><p id="confSub">Clique em um boleto da lista para conferir.</p></div>
-          <div class="h-acoes"><button id="bVerBoleto" class="btn-light" type="button"><svg><use href="#i-doc"/></svg>Ver boleto original</button></div>
+          <div class="h-acoes"><button id="bVerErro" class="btn-light" type="button" hidden><svg><use href="#i-stop"/></svg>Ver tela do erro</button><button id="bVerBoleto" class="btn-light" type="button"><svg><use href="#i-doc"/></svg>Ver boleto original</button></div>
         </div>
         <div id="confPasso" class="passo" hidden><span class="spin"></span><span></span></div>
         <div class="conf-grid">
@@ -187,6 +187,8 @@
           <div><h2>Histórico de Lançamentos</h2><p>Boletos lançados no Via Imob. Um boleto lançado não pode ser lançado de novo.</p></div>
           <div class="h-acoes">
             <button id="bCsv" class="btn-light" type="button"><svg><use href="#i-down"/></svg>Exportar CSV</button>
+            <button id="bExcluirSel" class="btn-light" type="button" disabled><svg><use href="#i-trash"/></svg><span>Excluir selecionados</span></button>
+            <button id="bLimparHist" class="btn-light" type="button"><svg><use href="#i-trash"/></svg>Limpar histórico</button>
           </div>
         </div>
         <div class="busca-barra">
@@ -204,7 +206,7 @@
         <div id="hResultado" class="resultado"></div>
         <div class="tabela-wrap">
           <table class="tabela">
-            <thead id="thHist"><tr><th data-sort="idx">#</th><th data-sort="cod">Cód.</th><th data-sort="cond">Condomínio / Unidade</th><th>Ocorrências</th>
+            <thead id="thHist"><tr><th class="sel-col"><input type="checkbox" id="selTodos" aria-label="Selecionar todos os boletos mostrados"></th><th data-sort="idx">#</th><th data-sort="cod">Cód.</th><th data-sort="cond">Condomínio / Unidade</th><th>Ocorrências</th>
               <th data-sort="venc">Vencimento</th><th data-sort="valor">Valor</th><th data-sort="lanc">Lançado em</th><th data-sort="status">Status</th><th class="acoes-th"><span class="sr">Ações</span></th></tr></thead>
             <tbody id="tbHist"></tbody>
           </table>
@@ -258,8 +260,10 @@
           <li><b>Navegador:</b> clique em <em>Abrir Navegador</em>, faça login no Via Imob e deixe a tela <b>Manutenção encargo</b> visível na aba ativa.</li>
           <li><b>Condomínios:</b> após a extração, cada link fica salvo no seu condomínio. Na tela <em>Condomínios</em> use <em>Extrair</em> ou <em>Usar links</em> para repetir no mês seguinte.</li>
           <li><b>Lançamento:</b> <em>Iniciar Lançamento</em> preenche o próximo boleto pronto. Ao concluir, ele é marcado como <b>lançado</b> e vai para o Histórico. Confira o total e <b>grave</b> no Via Imob. Se não gravar, use <em>Desfazer</em> no Histórico.</li>
+          <li><b>Avisos do Via Imob:</b> após o código identificador, o código de barras e cada ocorrência, o app confere se apareceu um aviso (ex.: código não encontrado, já lançado). Se aparecer no código ou nas barras, ele tira uma foto, fecha o aviso, marca o boleto como Erro e segue para o próximo. Se for numa ocorrência, ele fecha o aviso e para, para você conferir a tela.</li>
         </ol>
         <p class="mut">Tudo fica salvo no banco local <code>dados/boletopro.db</code>, com cópia de segurança diária em <code>dados/backup/</code>. Boleto repetido na extração (mesma linha digitável) é ignorado e registrado em <em>Duplicidades</em>; um boleto já lançado nunca é lançado de novo.</p>
+        <p class="mut">No Histórico dá para excluir boletos selecionados ou limpar tudo. Boleto excluído do Histórico perde a proteção contra lançamento duplo.</p>
         <p class="mut">Boletos com problema (soma divergente, dados ausentes ou ocorrência sem mapeamento) não são lançados. Ajuste <code>mapaOcorrencias</code> no <code>config.json</code> quando necessário.</p>
       </div>
     </section>

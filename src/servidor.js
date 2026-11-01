@@ -40,7 +40,8 @@ const estado = {
   versao: 0,
   app: { versao: versaoApp },
   config: { chrome: cfg.chrome, porta, urlViaImob: cfg.urlViaImob, viewportViaImob: cfg.viewportViaImob,
-    concorrenciaExtracao: cfg.concorrenciaExtracao, esperaMs: cfg.esperaMs, mapaOcorrencias: cfg.mapaOcorrencias },
+    concorrenciaExtracao: cfg.concorrenciaExtracao, esperaMs: cfg.esperaMs, mapaOcorrencias: cfg.mapaOcorrencias,
+    lancamento: cfg.lancamento, capturarBoleto: cfg.capturarBoleto !== false, diasCapturas: cfg.diasCapturas || 90 },
   atualizadoEm: new Date().toISOString(),
   extracao: { rodando: false, pausado: false, total: 0, feitos: 0, duplicados: 0, fila: 0, erro: null },
   boletos: [],
@@ -57,13 +58,14 @@ const banco = abrirBanco(dirDados);
 // Capturas (foto da página do boleto): dados/capturas/<id>.jpg, apagadas após N dias.
 const dirCapturas = path.join(dirDados, 'capturas');
 fs.mkdirSync(dirCapturas, { recursive: true });
-const arqCaptura = id => path.join(dirCapturas, `${Number(id)}.jpg`);
+const arqCaptura = (id, erro = false) => path.join(dirCapturas, `${Number(id)}${erro ? '-erro' : ''}.jpg`);
+const apagarCapturas = ids => { for (const id of ids) { fs.rmSync(arqCaptura(id), { force: true }); fs.rmSync(arqCaptura(id, true), { force: true }); } };
 function limparCapturasAntigas() {
   const limite = Date.now() - (Number(cfg.diasCapturas) || 90) * 86400000;
   try {
     for (const f of fs.readdirSync(dirCapturas)) {
       const arq = path.join(dirCapturas, f);
-      if (/^\d+\.jpg$/.test(f) && fs.statSync(arq).mtimeMs < limite) fs.rmSync(arq, { force: true });
+      if (/^\d+(-erro)?\.jpg$/.test(f) && fs.statSync(arq).mtimeMs < limite) fs.rmSync(arq, { force: true });
     }
   } catch {}
 }
@@ -206,23 +208,54 @@ async function lancar(id) {
   estado.passoLancamento = 'Preparando…';
   let page = null;
   // O script de lançamento informa cada etapa via console ("[LB] ...") → painel de conferência.
-  const aoLog = msg => { const t = msg.text(); if (t.startsWith('[LB] ')) { estado.passoLancamento = t.slice(5); mudou(false); } };
+  let fotoErro = null, pular = false;
+  const aoLog = msg => {
+    const t = msg.text();
+    if (t.startsWith('[LB] ')) { estado.passoLancamento = t.slice(5); mudou(false); }
+    // Script pediu a foto da tela com o aviso aberto (antes de fechá-lo).
+    else if (t === '[LB-FOTO]' && page) fotoErro = page.screenshot({ type: 'jpeg', quality: 75, timeout: 5000 }).catch(() => null);
+  };
+  // Caixa de mensagem do navegador (alert/confirm) durante o lançamento = aviso do Via Imob: fecha e avisa o script.
+  const aoDialogo = async d => {
+    const msg = d.message() || 'Caixa de mensagem do Via Imob';
+    await d.dismiss().catch(() => {});
+    page?.evaluate(m => { window.__lbAviso = m; }, msg).catch(() => {});
+  };
   try {
     page = await abaAtiva();
     page.on('console', aoLog);
-    b.status = 'lancando'; delete b.erroLancamento; salvarBoleto(b);
-    await page.evaluate(gerarScript(b));
+    page.on('dialog', aoDialogo);
+    b.status = 'lancando'; delete b.erroLancamento; delete b.capturaErro; fs.rmSync(arqCaptura(b.id, true), { force: true });
+    salvarBoleto(b);
+    const opc = cfg.lancamento || {};
+    await page.evaluate(gerarScript(b, { rapido: opc.rapido !== false, verificar: opc.verificarAvisos !== false }));
     b.status = 'lancado';
     b.lancadoEm = new Date().toISOString();
     estado.boletos = estado.boletos.filter(x => x.id !== b.id); // sai da lista → Histórico
     tocar('hist', 'cond');
   } catch (e) {
-    b.status = 'erro'; b.erroLancamento = String(e.message).split('\n')[0];
+    b.status = 'erro';
+    // Formato do script: AVISO|etapa|mensagem|fechou(0/1)|pode pular(0/1)
+    const aviso = /AVISO\|([^|]*)\|([^|\n]*)(?:\|([01])\|([01]))?/.exec(String(e.message));
+    if (aviso) {
+      pular = aviso[4] === '1';
+      b.erroLancamento = `Via Imob mostrou um aviso após ${aviso[1]}: ${aviso[2]}` +
+        (aviso[3] === '0' ? ' (a caixa de aviso não fechou sozinha — feche no Via Imob)'
+          : !pular ? ' (aviso fechado; confira e limpe os itens já adicionados na tela)' : '');
+    } else b.erroLancamento = String(e.message).replace(/^page\.evaluate:\s*(Error:\s*)?/, '').split('\n')[0];
+    // Foto da tela no momento do erro (a tirada com o aviso aberto, se houver).
+    if (page) {
+      try {
+        const img = (await fotoErro) || await page.screenshot({ type: 'jpeg', quality: 75, timeout: 5000 });
+        fs.writeFileSync(arqCaptura(b.id, true), img); b.capturaErro = true;
+      } catch {}
+    }
   } finally {
     page?.off('console', aoLog);
+    page?.off('dialog', aoDialogo);
     estado.lancando = null; estado.passoLancamento = null; salvarBoleto(b);
   }
-  return b;
+  return { b, pular };
 }
 
 // ---------- Extração ----------
@@ -379,21 +412,30 @@ const rotas = {
     if (estado.extracao.rodando) throw erro('Extração em andamento', 409);
     if (estado.lancando !== null) throw erro('Lançamento em andamento', 409);
     const ids = banco.limparPendentes();
-    for (const id of ids) fs.rmSync(arqCaptura(id), { force: true });
+    apagarCapturas(ids);
     estado.boletos = banco.loteAtual(); tocar('cond'); mudou(); return { ok: true, removidos: ids.length };
   },
   'POST /api/via/abrir': async () => { await abrirVia(); return { ok: true }; },
+  // Lança o boleto. Se o Via Imob avisar erro no código/barras, a caixa é fechada e segue para o próximo pronto.
   'POST /api/lancar': async ({ id }) => {
     if (!idValido(id)) throw erro('Boleto inválido', 400);
-    const b = await lancar(id);
-    if (b.status === 'erro') throw erro(b.erroLancamento || 'Falha no lançamento', 400);
-    return { ok: true };
+    const pulados = [];
+    const pularLigado = cfg.lancamento?.pularComErro !== false;
+    for (let atual = id; ;) {
+      const { b, pular } = await lancar(atual);
+      if (b.status === 'lancado') return { ok: true, lancado: { id: b.id, cod: b.codIdentificador }, pulados };
+      pulados.push({ id: b.id, cod: b.codIdentificador, erro: b.erroLancamento });
+      const prox = pular && pularLigado && estado.boletos.find(x => x.status === 'pendente' && !x.problemas?.length);
+      if (!prox) return { ok: true, lancado: null, pulados, parou: !pular };
+      estado.passoLancamento = `Aviso no boleto ${b.codIdentificador} — indo para o próximo…`; mudou(false);
+      atual = prox.id;
+    }
   },
   'POST /api/boletos/excluir': async ({ id }) => {
     if (!idValido(id)) throw erro('Boleto inválido', 400);
     if (estado.lancando === id) throw erro('Boleto em lançamento', 409);
     if (!banco.excluir(id)) throw erro('Só é possível excluir boletos ainda não lançados', 409);
-    fs.rmSync(arqCaptura(id), { force: true });
+    apagarCapturas([id]);
     estado.boletos = estado.boletos.filter(x => x.id !== id); tocar('cond'); mudou(); return { ok: true };
   },
   // Desfaz um lançamento (ex.: não foi gravado no Via Imob): volta para a lista.
@@ -403,6 +445,16 @@ const rotas = {
     if (!b || b.status !== 'lancado') throw erro('Boleto não está lançado', 409);
     b.status = 'pendente'; delete b.lancadoEm;
     estado.boletos.push(b); tocar('hist', 'cond'); salvarBoleto(b); return { ok: true };
+  },
+  // Histórico: excluir selecionados / limpar tudo. Atenção: sem o registro, a trava de lançamento duplo deixa de valer para eles.
+  'POST /api/historico/excluir': async ({ ids }) => {
+    if (!Array.isArray(ids) || !ids.length || ids.length > 100000 || !ids.every(idValido)) throw erro('Seleção inválida', 400);
+    const apagados = banco.excluirLancados(ids);
+    apagarCapturas(apagados); tocar('hist', 'cond'); mudou(false); return { ok: true, removidos: apagados.length };
+  },
+  'POST /api/historico/limpar': async () => {
+    const apagados = banco.limparHistorico();
+    apagarCapturas(apagados); tocar('hist', 'cond'); mudou(false); return { ok: true, removidos: apagados.length };
   },
   'POST /api/duplicidades/remover': async ({ id }) => {
     if (!idValido(id)) throw erro('Registro inválido', 400);
@@ -458,7 +510,7 @@ const servidor = http.createServer(async (req, res) => {
       if (url.pathname === '/api/captura') {
         const id = url.searchParams.get('id');
         if (!/^\d+$/.test(id || '')) return json(res, { erro: 'id inválido' }, 400);
-        let img; try { img = fs.readFileSync(arqCaptura(id)); } catch { return json(res, { erro: 'Captura não disponível' }, 404); }
+        let img; try { img = fs.readFileSync(arqCaptura(id, url.searchParams.get('tipo') === 'erro')); } catch { return json(res, { erro: 'Captura não disponível' }, 404); }
         return responder(res, 200, img, 'image/jpeg');
       }
       if (url.pathname === '/api/estado') {

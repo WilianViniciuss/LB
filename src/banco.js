@@ -126,6 +126,8 @@ export function abrirBanco(dir) {
     lote: db.prepare("SELECT * FROM boletos WHERE status <> 'lancado' ORDER BY id"),
     limparPendentes: db.prepare("DELETE FROM boletos WHERE status NOT IN ('lancado', 'lancando') RETURNING id"),
     excluir: db.prepare("DELETE FROM boletos WHERE id = ? AND status NOT IN ('lancado', 'lancando')"),
+    limparHistorico: db.prepare("DELETE FROM boletos WHERE status = 'lancado' RETURNING id"),
+    excluirLancado: db.prepare("DELETE FROM boletos WHERE id = ? AND status = 'lancado' RETURNING id"),
     jaLancado: db.prepare("SELECT id, lancado_em FROM boletos WHERE linha_digitavel = ? AND status = 'lancado' AND id <> ? LIMIT 1"),
     dupInserir: db.prepare('INSERT INTO duplicidades (url, boleto_id, motivo, detectado_em, busca, dados) VALUES (?, ?, ?, ?, ?, ?)'),
     dupContar: db.prepare('SELECT COUNT(*) n FROM duplicidades'),
@@ -314,6 +316,9 @@ export function abrirBanco(dir) {
     porId: id => linhaParaObj(st.bolPorId.get(Number(id))),
     registrarExtracao, atualizar, historico,
     limparPendentes: () => st.limparPendentes.all().map(r => r.id),
+    // Histórico: apaga boletos lançados (todos ou os escolhidos). Devolve os ids apagados.
+    limparHistorico: () => st.limparHistorico.all().map(r => r.id),
+    excluirLancados: transacao(ids => ids.flatMap(id => st.excluirLancado.all(Number(id)).map(r => r.id))),
     excluir: id => st.excluir.run(Number(id)).changes,
     jaLancado: (linha, id) => (soDigitos(linha) ? st.jaLancado.get(soDigitos(linha), Number(id) || 0) : null),
     // Pré-checagem barata (antes da foto): já existe boleto com essa linha que não seria atualizado?

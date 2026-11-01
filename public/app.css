@@ -175,6 +175,11 @@ nav a { gap: 14px }
 .mais { display: flex; justify-content: center; margin-top: 12px }
 .mais:has(> [hidden]) { display: none }
 
+/* ---------- Seleção ---------- */
+.sel-col { width: 1%; padding-right: 0 !important }
+.sel-col input { width: 17px; height: 17px; accent-color: var(--azul); cursor: pointer; vertical-align: middle }
+#bVerErro { color: var(--verm) }
+
 /* ---------- Conferência ---------- */
 .conf h2 .badge { font-size: 12.5px; padding: 3px 10px; margin-left: 8px; vertical-align: 3px }
 .conf h3 { font-size: 14px; margin: 0 0 10px; color: var(--mut); text-transform: uppercase; letter-spacing: .04em }

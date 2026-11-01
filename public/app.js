@@ -14,6 +14,7 @@
   const lembrar = () => { try { const { busca, ...resto } = F.hist; localStorage.setItem('filtroHist', JSON.stringify(resto)); } catch {} };
   const abertos = new Set(); // linhas expandidas (por id do boleto)
   let H = { total: 0, somaCentavos: 0, itens: [] }, limiteHist = 200, histRev = -1; // histórico (vem do banco)
+  const selHist = new Set(); // ids selecionados no Histórico
   let CD = { condominios: [], linksSemCondominio: 0 }; // condomínios (vem do banco)
   const condAbertos = new Map(); // condomínio expandido → links
   let buscaCond = '';
@@ -196,7 +197,11 @@
     if (!b) return;
     if (!confirm(`Lançar ${b.codIdentificador} (${b.unidade || ''})?\nConfirme que a tela Manutenção encargo está na aba ativa.`)) return;
     const r = await api('/api/lancar', { id });
-    if (r) toast(`Boleto ${b.codIdentificador} lançado e movido para o Histórico. Confira e grave no Via Imob.`, 'ok');
+    if (!r) return;
+    for (const p of r.pulados || []) toast(`Boleto ${p.cod}: ${p.erro}`, 'erro');
+    if (r.lancado) toast(`Boleto ${r.lancado.cod} lançado e movido para o Histórico.${r.pulados?.length ? ` (${plural(r.pulados.length, 'boleto pulado', 'boletos pulados')} por aviso do Via Imob)` : ''} Confira e grave no Via Imob.`, 'ok');
+    else if (r.parou) toast('Lançamento parado: confira a tela do Via Imob antes de continuar.', 'erro');
+    else if (r.pulados?.length) toast('Nenhum outro boleto pronto para lançar.', 'erro');
   }
 
   // Delegação de eventos nas tabelas (sem handlers inline → compatível com CSP).
@@ -221,6 +226,7 @@
         }
         return;
       case 'foto': return abrirFoto(acharBoleto(id));
+      case 'fotoErro': return abrirFoto(acharBoleto(id), true);
       case 'det':
         abertos.has(id) ? abertos.delete(id) : abertos.add(id);
         renderDashboard(); return renderHistorico();
@@ -256,7 +262,7 @@
       b.conferencia && `<li>Conferência: soma ${esc(b.conferencia.somaCalc)} · recibo ${esc(b.conferencia.totalRecibo)} · documento ${esc(b.conferencia.valorDocumento)} · linha ${esc(b.conferencia.valorLinha)}</li>`,
       ...(b.problemas || []).map(p => `<li class="prob">${esc(p)}</li>`),
       `<li>Extraído: ${esc(dataHora(b.extraidoEm))} · Lançado: ${esc(dataHora(b.lancadoEm))}</li>`,
-      `<li>Link: <span class="sub2">${esc(b.link)}</span> <button type="button" class="mini" data-acao="foto" data-id="${b.id}">Ver boleto original</button></li>`
+      `<li>Link: <span class="sub2">${esc(b.link)}</span> <button type="button" class="mini" data-acao="foto" data-id="${b.id}">Ver boleto original</button>${b.capturaErro ? ` <button type="button" class="mini" data-acao="fotoErro" data-id="${b.id}">Ver tela do erro</button>` : ''}</li>`
     ].filter(Boolean).join('');
     return `<tr class="det"><td colspan="${colunas}"><ul>${itens}</ul></td></tr>`;
   }
@@ -351,7 +357,8 @@
     $('hMais').hidden = H.itens.length >= H.total;
     definirHTML($('tbHist'), H.itens.map(b => {
       const aberto = abertos.has(b.id);
-      return `<tr class="linha">
+      return `<tr class="linha${selHist.has(b.id) ? ' sel' : ''}">
+        <td class="sel-col"><input type="checkbox" data-sel="${b.id}"${selHist.has(b.id) ? ' checked' : ''} aria-label="Selecionar boleto ${b.id}"></td>
         <td><button type="button" class="expandir" data-acao="det" data-id="${b.id}" aria-expanded="${aberto}" aria-label="Detalhes">${ico('i-chev')}</button>${b.id}</td>
         <td class="num">${esc(b.codIdentificador || '—')}</td>
         <td>${esc(b.condominio || '—')}<div class="sub2">${esc(b.unidade || '')}</div></td>
@@ -360,9 +367,49 @@
         <td class="num">${b.conferencia ? 'R$ ' + esc(b.conferencia.valorDocumento) : '—'}</td>
         <td class="num sub2">${b.lancadoEm ? esc(dataHora(b.lancadoEm)) : '—'}</td>
         <td>${tagStatus(b)}${temProblema(b) ? `<div class="prob">${b.problemas.map(esc).join('<br>')}</div>` : ''}</td>
-        <td class="acoes">${botoesAcao(b)}</td></tr>${aberto ? detalhe(b, 9) : ''}`;
-    }).join('') || linhaVazia(9, 'Nenhum boleto encontrado.', filtroAtivo(F.hist) ? 'Ajuste ou limpe os filtros.' : ''));
+        <td class="acoes">${botoesAcao(b)}</td></tr>${aberto ? detalhe(b, 10) : ''}`;
+    }).join('') || linhaVazia(10, 'Nenhum boleto encontrado.', filtroAtivo(F.hist) ? 'Ajuste ou limpe os filtros.' : ''));
+    atualizarSelecao();
   }
+
+  // Seleção no Histórico (só ids que ainda aparecem na lista).
+  function atualizarSelecao() {
+    const visiveis = new Set(H.itens.map(b => b.id));
+    for (const id of selHist) if (!visiveis.has(id)) selHist.delete(id);
+    const n = selHist.size;
+    $('bExcluirSel').disabled = !n;
+    $('bExcluirSel').querySelector('span').textContent = n ? `Excluir selecionados (${n})` : 'Excluir selecionados';
+    $('bLimparHist').disabled = !H.total && !filtroAtivo(F.hist);
+    const todos = $('selTodos');
+    todos.checked = n > 0 && n === H.itens.length;
+    todos.indeterminate = n > 0 && n < H.itens.length;
+  }
+  $('tbHist').addEventListener('change', e => {
+    const cb = e.target.closest('input[data-sel]'); if (!cb) return;
+    const id = Number(cb.dataset.sel);
+    cb.checked ? selHist.add(id) : selHist.delete(id);
+    cb.closest('tr').classList.toggle('sel', cb.checked);
+    $('tbHist')._html = null; // força redesenho correto na próxima atualização
+    atualizarSelecao();
+  });
+  $('selTodos').addEventListener('change', e => {
+    selHist.clear();
+    if (e.target.checked) H.itens.forEach(b => selHist.add(b.id));
+    $('tbHist')._html = null; renderHistorico();
+  });
+  const AVISO_TRAVA = 'Sem o registro, a proteção contra lançamento duplo deixa de valer para esses boletos.';
+  $('bExcluirSel').onclick = async () => {
+    const ids = [...selHist];
+    if (!ids.length || !confirm(`Excluir ${plural(ids.length, 'boleto selecionado', 'boletos selecionados')} do histórico?\n${AVISO_TRAVA}`)) return;
+    const r = await api('/api/historico/excluir', { ids });
+    if (r) { selHist.clear(); toast(`${plural(r.removidos, 'boleto excluído', 'boletos excluídos')} do histórico`, 'ok'); recarregarHist(); }
+  };
+  $('bLimparHist').onclick = async () => {
+    if (!confirm(`Apagar TODO o histórico (${plural(H.total, 'boleto lançado', 'boletos lançados')})?\n${AVISO_TRAVA}\nEsta ação não pode ser desfeita.`)) return;
+    if (!confirm('Tem certeza? Todo o histórico será apagado.')) return;
+    const r = await api('/api/historico/limpar');
+    if (r) { selHist.clear(); toast(`Histórico limpo: ${plural(r.removidos, 'boleto removido', 'boletos removidos')}`, 'ok'); recarregarHist(); }
+  };
 
   // ---------- Condomínios ----------
   let condRev = -1;
@@ -493,6 +540,10 @@
       ['Porta', c.porta], ['Chrome', c.chrome], ['URL Via Imob', c.urlViaImob],
       ['Janela Via Imob', c.viewportViaImob ? `${c.viewportViaImob.width} × ${c.viewportViaImob.height}` : 'automática'],
       ['Concorrência', c.concorrenciaExtracao], ['Espera por página', c.esperaMs != null ? c.esperaMs + ' ms' : ''],
+      ['Lançamento', [(c.lancamento?.rapido !== false ? 'rápido (espera a resposta do Via Imob)' : 'tempos fixos'),
+        (c.lancamento?.verificarAvisos !== false ? 'verifica avisos' : 'sem verificação de avisos'),
+        (c.lancamento?.pularComErro !== false ? 'com aviso: fecha e vai para o próximo' : 'com aviso: para')].join(' · ')],
+      ['Foto do boleto', c.capturarBoleto ? `sim, guardada por ${c.diasCapturas} dias` : 'não'],
       ['Banco de dados', c.banco]
     ];
     $('cfg').innerHTML = pares.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v ?? '—')}</dd>`).join('') + `<dt>Ocorrências</dt><dd>${mapa || '—'}</dd>`;
@@ -579,7 +630,7 @@
       if (/identificador/i.test(passo)) etapa = 0; else if (/barras/i.test(passo)) etapa = 1;
       else { const m = /Ocorrência (\d+) de/.exec(passo); if (m) etapa = 1 + Number(m[1]); else if (/Conclu/i.test(passo)) etapa = 99; }
     }
-    const chave = JSON.stringify([b.id, b.status, passo, c.modo, b.temCaptura]);
+    const chave = JSON.stringify([b.id, b.status, passo, c.modo, b.temCaptura, b.capturaErro, b.erroLancamento]);
     if (chave === chaveConf) return; // nada mudou: não redesenha
     chaveConf = chave;
 
@@ -618,21 +669,24 @@
     ].filter(([, v]) => v != null) : [];
     $('confCheck').innerHTML = checks.map(([k, v]) => `<span class="check${ok(v) ? '' : ' nao'}">${ok(v) ? '✓' : '✗'} ${k}: R$ ${esc(v)}</span>`).join('') +
       (doc !== null ? `<span class="check${checks.every(([, v]) => ok(v)) ? '' : ' nao'}">Valor do documento: R$ ${esc(b.conferencia.valorDocumento)}</span>` : '') +
-      (b.problemas || []).map(p => `<span class="check nao">⚠ ${esc(p)}</span>`).join('');
+      (b.problemas || []).map(p => `<span class="check nao">⚠ ${esc(p)}</span>`).join('') +
+      (b.erroLancamento ? `<span class="check nao">⚠ Último lançamento: ${esc(b.erroLancamento)}</span>` : '');
     $('bVerBoleto').onclick = () => abrirFoto(b);
+    $('bVerErro').hidden = !b.capturaErro;
+    $('bVerErro').onclick = () => abrirFoto(b, true);
   }
 
   // ---------- Boleto original (captura feita na extração) ----------
   let urlFoto = null;
-  async function abrirFoto(b) {
+  async function abrirFoto(b, erro = false) {
     if (!b) return;
-    $('dlgTitulo').textContent = [b.condominio, b.unidade, b.codIdentificador].filter(Boolean).join(' · ') || 'Boleto';
+    $('dlgTitulo').textContent = (erro ? 'Tela do erro · ' : '') + ([b.condominio, b.unidade, b.codIdentificador].filter(Boolean).join(' · ') || 'Boleto');
     const link = /^https?:\/\//i.test(b.link || '') ? b.link : null;
     $('dlgLink').hidden = !link; if (link) $('dlgLink').href = link;
     $('dlgImg').hidden = true; $('dlgVazio').hidden = true;
     $('dlgBoleto').showModal();
     try {
-      const r = await fetch('/api/captura?id=' + b.id, { headers: { 'X-Token': TOKEN }, cache: 'no-store' });
+      const r = await fetch(`/api/captura?id=${b.id}${erro ? '&tipo=erro' : ''}`, { headers: { 'X-Token': TOKEN }, cache: 'no-store' });
       if (!r.ok) throw 0;
       if (urlFoto) URL.revokeObjectURL(urlFoto);
       urlFoto = URL.createObjectURL(await r.blob());
