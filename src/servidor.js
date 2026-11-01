@@ -41,7 +41,7 @@ const estado = {
   app: { versao: versaoApp },
   config: { chrome: cfg.chrome, porta, urlViaImob: cfg.urlViaImob, viewportViaImob: cfg.viewportViaImob,
     concorrenciaExtracao: cfg.concorrenciaExtracao, esperaMs: cfg.esperaMs, mapaOcorrencias: cfg.mapaOcorrencias,
-    lancamento: cfg.lancamento, diasCapturas: cfg.diasCapturas || 90 },
+    lancamento: cfg.lancamento, diasCapturas: cfg.diasCapturas || 90, lancamentoManual: cfg.lancamentoManual ?? ['multa', 'mudan'] },
   atualizadoEm: new Date().toISOString(),
   extracao: { rodando: false, pausado: false, total: 0, feitos: 0, duplicados: 0, fila: 0, erro: null },
   boletos: [],
@@ -200,6 +200,7 @@ async function lancar(id) {
   if (estado.lancando !== null) throw erro('Já existe um lançamento em andamento', 409);
   const b = boletoDoLote(id);
   if (!b) throw erro('Boleto não está na lista para lançar (já lançado ou excluído)', 409);
+  if (b.status === 'manual') throw erro('Este boleto é de lançamento manual (tem multa ou taxa de mudança)', 409);
   if (b.problemas?.length) throw erro('Boleto com problemas: ' + b.problemas.join('; '), 400);
   // Trava contra lançamento duplo: mesma linha digitável já lançada antes.
   const dup = banco.jaLancado(b.linhaDigitavel, b.id);
@@ -442,7 +443,7 @@ const rotas = {
     if (!idValido(id)) throw erro('Boleto inválido', 400);
     const b = banco.porId(id);
     if (!b || b.status !== 'lancado') throw erro('Boleto não está lançado', 409);
-    b.status = 'pendente'; delete b.lancadoEm;
+    b.status = b.manual ? 'manual' : 'pendente'; delete b.lancadoEm; delete b.lancadoManual;
     estado.boletos.push(b); tocar('hist', 'cond'); salvarBoleto(b); return { ok: true };
   },
   // Histórico: excluir selecionados / limpar tudo. Atenção: sem o registro, a trava de lançamento duplo deixa de valer para eles.
@@ -454,6 +455,21 @@ const rotas = {
   'POST /api/historico/limpar': async () => {
     const apagados = banco.limparHistorico();
     apagarCapturas(apagados); tocar('hist', 'cond'); mudou(false); return { ok: true, removidos: apagados.length };
+  },
+  // Lançamento manual (multa / taxa de mudança): o usuário lança no Via Imob e marca aqui.
+  'POST /api/manual/lancado': async ({ id }) => {
+    if (!idValido(id)) throw erro('Boleto inválido', 400);
+    const b = boletoDoLote(id);
+    if (!b || b.status !== 'manual') throw erro('Boleto não está na lista de lançamento manual', 409);
+    const dup = banco.jaLancado(b.linhaDigitavel, b.id);
+    if (dup) throw erro(`Este boleto já foi lançado (registro #${dup.id})`, 409);
+    b.status = 'lancado'; b.lancadoEm = new Date().toISOString(); b.lancadoManual = true;
+    estado.boletos = estado.boletos.filter(x => x.id !== id);
+    tocar('hist', 'cond'); salvarBoleto(b); return { ok: true };
+  },
+  'POST /api/manual/limpar': async () => {
+    const ids = banco.limparManuais(); apagarCapturas(ids);
+    estado.boletos = estado.boletos.filter(x => x.status !== 'manual'); tocar('cond'); mudou(); return { ok: true, removidos: ids.length };
   },
   'POST /api/duplicidades/remover': async ({ id }) => {
     if (!idValido(id)) throw erro('Registro inválido', 400);

@@ -2,7 +2,9 @@
 (() => {
   const $ = id => document.getElementById(id);
   const TOKEN = document.querySelector('meta[name="token"]').content;
-  const ROTULO = { pendente: 'Pronto', lancando: 'Lançando…', lancado: 'Lançado', erro: 'Erro' };
+  const ROTULO = { pendente: 'Pronto', lancando: 'Lançando…', lancado: 'Lançado', erro: 'Erro', manual: 'Manual' };
+  const automaticos = () => E.boletos.filter(b => b.status !== 'manual');
+  const manuais = () => E.boletos.filter(b => b.status === 'manual');
   const MAX_ARQ = 2 * 1024 * 1024;
 
   let E = { versao: -1, boletos: [], extracao: {}, via: {}, lancando: null, app: {}, config: {}, rev: {} };
@@ -70,6 +72,7 @@
     dashboard: ['Dashboard', 'Gerencie a extração de dados e o lançamento dos boletos de forma simples e eficiente.'],
     historico: ['Histórico', 'Boletos já lançados no Via Imob.'],
     condominios: ['Condomínios', 'Links vinculados a cada condomínio, prontos para reutilizar.'],
+    manual: ['Lançamento manual', 'Boletos com multa ou taxa de mudança, para lançar à mão.'],
     duplicidades: ['Duplicidades', 'Boletos ignorados na extração por já existirem no banco.'],
     configuracoes: ['Configurações', 'Parâmetros atuais do sistema.'],
     ajuda: ['Ajuda', 'Passo a passo para usar o sistema.']
@@ -248,7 +251,8 @@
   }
   const tagStatus = b => {
     const st = statusDe(b);
-    return `<span class="tag ${esc(st)}">${esc(ROTULO[st] || st)}</span>` +
+    const rot = st === 'lancado' && b.lancadoManual ? 'Lançado (manual)' : ROTULO[st] || st;
+    return `<span class="tag ${esc(st)}">${esc(rot)}</span>` +
       (b.erroLancamento ? `<div class="prob">${esc(b.erroLancamento)}</div>` : '');
   };
   const ocorrenciasHtml = b => (b.ocorrencias || [])
@@ -299,9 +303,10 @@
 
   function renderDashboard() {
     const conferido = boletoConferencia()?.b;
-    const linhas = filtrar(E.boletos, F.dash);
+    const lista = automaticos();
+    const linhas = filtrar(lista, F.dash);
     marcarOrdem('thDash', F.dash);
-    $('dResultado').innerHTML = filtroAtivo(F.dash) ? `<b>${linhas.length}</b> de ${E.boletos.length}` : '';
+    $('dResultado').innerHTML = filtroAtivo(F.dash) ? `<b>${linhas.length}</b> de ${lista.length}` : '';
     definirHTML($('tb'), linhas.map(b => {
       const aberto = abertos.has(b.id);
       return `<tr class="linha${conferido?.id === b.id ? ' sel' : ''}" data-id="${b.id}">
@@ -312,7 +317,7 @@
         <td class="num">${b.conferencia ? 'R$ ' + esc(b.conferencia.valorDocumento) : '—'}</td>
         <td>${tagStatus(b)}</td>
         <td class="acoes">${botoesAcao(b)}</td></tr>${aberto ? detalhe(b, 7) : ''}`;
-    }).join('') || (E.boletos.length ? linhaVazia(7, 'Nenhum boleto corresponde à busca.', '')
+    }).join('') || (lista.length ? linhaVazia(7, 'Nenhum boleto corresponde à busca.', '')
       : linhaVazia(7, 'Nenhum dado extraído ainda.', 'Adicione os links ou o arquivo e clique em "Iniciar Extração".')));
   }
 
@@ -498,6 +503,72 @@
     }
   });
 
+  // ---------- Lançamento manual (multa / taxa de mudança) ----------
+  let buscaManual = '';
+  const itensManuaisTxt = b => (b.itensManuais || []).map(i => `${i.item}: R$ ${i.valor}`).join(' | ');
+  const listaManual = () => {
+    const termos = norm(buscaManual).split(/\s+/).filter(Boolean);
+    return manuais().filter(b => !termos.length || termos.every(t => textoBusca(b).includes(t)));
+  };
+  function renderManual() {
+    const lista = listaManual(), total = manuais().length;
+    $('mResultado').innerHTML = `<b>${lista.length}</b>${lista.length !== total ? ` de ${total}` : ''} ${total === 1 ? 'boleto' : 'boletos'}`;
+    for (const id of ['bCopiarManual', 'bCsvManual', 'bLimparManual']) $(id).disabled = !total;
+    definirHTML($('tbManual'), lista.map(b => {
+      const link = /^https?:\/\//i.test(b.link || '') ? b.link : null;
+      return `<tr class="linha">
+        <td><b>${esc(b.condominio || '—')}</b><div class="sub2">${esc(b.unidade || '')}</div></td>
+        <td class="num">${esc(b.codIdentificador || '—')}</td>
+        <td class="num">${esc(b.vencimento || '—')}</td>
+        <td class="num">${b.conferencia ? 'R$ ' + esc(b.conferencia.valorDocumento) : '—'}</td>
+        <td>${(b.itensManuais || []).map(i => `<span class="tag manual">${esc(i.item)}: R$ ${esc(i.valor)}</span>`).join(' ')}
+          ${temProblema(b) ? `<div class="prob">${b.problemas.map(esc).join('<br>')}</div>` : ''}</td>
+        <td>${link ? `<a class="mini" href="${esc(link)}" target="_blank" rel="noopener noreferrer">Abrir</a> <button type="button" class="mini" data-m="copiar" data-id="${b.id}">Copiar</button>` : '—'}
+          <div class="sub2 url">${esc(b.link || '')}</div></td>
+        <td class="acoes"><button type="button" class="mini" data-m="dados" data-id="${b.id}">Ver dados</button>
+          <button type="button" class="mini" data-m="lancado" data-id="${b.id}">Marcar como lançado</button>
+          <button type="button" class="mini" data-m="excluir" data-id="${b.id}">Excluir</button></td></tr>`;
+    }).join('') || linhaVazia(7, total ? 'Nenhum boleto corresponde à busca.' : 'Nenhum boleto para lançamento manual.', total ? '' : 'Boletos com multa ou taxa de mudança aparecem aqui após a extração.'));
+  }
+  async function copiar(texto, msg) {
+    try { await navigator.clipboard.writeText(texto); toast(msg, 'ok'); }
+    catch { toast('Não foi possível copiar', 'erro'); }
+  }
+  $('mBusca').addEventListener('input', debounce(e => { buscaManual = e.target.value; renderManual(); }));
+  $('tbManual').addEventListener('click', async e => {
+    const btn = e.target.closest('button[data-m]'); if (!btn) return;
+    const id = Number(btn.dataset.id), b = E.boletos.find(x => x.id === id); if (!b) return;
+    switch (btn.dataset.m) {
+      case 'copiar': return copiar(b.link, 'Link copiado');
+      case 'dados': return abrirDados(b);
+      case 'lancado':
+        if (confirm(`Confirma que o boleto ${b.codIdentificador} (${b.condominio} · ${b.unidade}) já foi lançado no Via Imob?`)
+          && await api('/api/manual/lancado', { id })) toast('Marcado como lançado e movido para o Histórico', 'ok');
+        return;
+      case 'excluir':
+        if (confirm('Excluir este boleto da lista de lançamento manual?')) api('/api/boletos/excluir', { id });
+    }
+  });
+  $('bCopiarManual').onclick = () => {
+    const lista = listaManual();
+    copiar(lista.map(b => [b.condominio, b.unidade, b.codIdentificador, b.vencimento, b.conferencia && 'R$ ' + b.conferencia.valorDocumento,
+      itensManuaisTxt(b), b.link].filter(Boolean).join(' — ')).join('\n'), `${plural(lista.length, 'boleto copiado', 'boletos copiados')}`);
+  };
+  $('bCsvManual').onclick = () => {
+    const cel = v => { let t = String(v ?? ''); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"'; };
+    const linhas = [['Condomínio', 'Unidade', 'Código', 'Vencimento', 'Valor', 'Itens manuais', 'Link'],
+      ...listaManual().map(b => [b.condominio, b.unidade, b.codIdentificador, b.vencimento, b.conferencia?.valorDocumento, itensManuaisTxt(b), b.link])];
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['\ufeff' + linhas.map(l => l.map(cel).join(';')).join('\r\n')], { type: 'text/csv;charset=utf-8' }));
+    a.download = `lancamento-manual-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  $('bLimparManual').onclick = async () => {
+    if (!confirm('Remover todos os boletos da lista de lançamento manual?\n(Os já marcados como lançados continuam no Histórico.)')) return;
+    const r = await api('/api/manual/limpar');
+    if (r) toast(`${plural(r.removidos, 'boleto removido', 'boletos removidos')}`, 'ok');
+  };
+
   // ---------- Duplicidades ----------
   let DUP = { total: 0, itens: [] }, buscaDup = '', dupRev = -1;
   async function carregarDup() {
@@ -543,6 +614,7 @@
       ['Lançamento', [(c.lancamento?.rapido !== false ? 'rápido (espera a resposta do Via Imob)' : 'tempos fixos'),
         (c.lancamento?.verificarAvisos !== false ? 'verifica avisos' : 'sem verificação de avisos'),
         (c.lancamento?.pularComErro !== false ? 'com aviso: fecha e vai para o próximo' : 'com aviso: para')].join(' · ')],
+      ['Lançamento manual (termos)', (c.lancamentoManual || []).join(', ') || '—'],
       ['Foto da tela de erro', `guardada por ${c.diasCapturas} dias`],
       ['Banco de dados', c.banco]
     ];
@@ -550,7 +622,7 @@
   }
 
   function renderControles() {
-    const x = E.extracao || {}, bs = E.boletos;
+    const x = E.extracao || {}, bs = automaticos(), nMan = manuais().length;
     const n = s => bs.filter(b => !temProblema(b) && b.status === s).length;
     const prob = bs.filter(temProblema).length, pend = n('pendente');
 
@@ -567,6 +639,7 @@
     $('bPausar').querySelector('.bola').innerHTML = ico(x.pausado ? 'i-play' : 'i-pause');
     $('bProx').disabled = !podeLancar() || !pend;
     $('bLimparLista').disabled = !!x.rodando || E.lancando !== null || !bs.length;
+    $('nManual').textContent = nMan || ''; $('nManual').hidden = !nMan;
     $('nDup').textContent = E.duplicidades || '';
     $('nDup').hidden = !E.duplicidades;
     $('viaTxt').textContent = E.via.aberto ? 'Navegador aberto' : 'Acesse o site de origem';
@@ -586,9 +659,10 @@
     $('badge').className = 'badge ' + cls;
     $('badge').innerHTML = ico(icone) + `<span>${esc(txt)}</span>`;
 
-    $('resumo').innerHTML = bs.length ? [
+    $('resumo').innerHTML = (bs.length ? [
       ['Na lista', bs.length], ['Prontos', pend], ['Com problema', prob], ['Erro no lançamento', n('erro')]
-    ].map(([k, v]) => `<span class="chip">${k}: <b>${v}</b></span>`).join('') : '';
+    ].map(([k, v]) => `<span class="chip">${k}: <b>${v}</b></span>`).join('') : '') +
+      (nMan ? `<a class="chip chip-manual" href="#manual">Lançamento manual: <b>${nMan}</b> →</a>` : '');
 
     $('ultima').textContent = dataHora(E.atualizadoEm);
     $('versao').textContent = E.app?.versao || '—';
@@ -598,7 +672,7 @@
   let selecionado = null;
   // Qual boleto mostrar: o que está sendo lançado > o clicado > o próximo pronto.
   function boletoConferencia() {
-    const bs = E.boletos;
+    const bs = automaticos();
     if (E.lancando !== null) { const b = bs.find(x => x.id === E.lancando); if (b) return { b, modo: 'Lançando agora', cls: 'run' }; }
     const sel = bs.find(x => x.id === selecionado);
     if (sel) return { b: sel, modo: 'Selecionado', cls: 'wait' };
@@ -737,6 +811,7 @@
     renderControles();
     renderDashboard();
     renderConferencia();
+    renderManual();
     if (!configMostrada) { renderConfig(); configMostrada = true; }
     // Dados do banco: recarrega só a tela visível e só quando aquela área mudou.
     if (visivel('historico') && histRev !== E.rev.hist) histAdiado();

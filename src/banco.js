@@ -126,7 +126,8 @@ export function abrirBanco(dir) {
         valor_centavos = $valor, vencimento = $venc, extraido_em = $extraido, lancado_em = $lancado, tem_captura = $captura,
         busca = $busca, dados = $dados WHERE id = $id`),
     lote: db.prepare("SELECT * FROM boletos WHERE status <> 'lancado' ORDER BY id"),
-    limparPendentes: db.prepare("DELETE FROM boletos WHERE status NOT IN ('lancado', 'lancando') RETURNING id"),
+    limparPendentes: db.prepare("DELETE FROM boletos WHERE status NOT IN ('lancado', 'lancando', 'manual') RETURNING id"),
+    limparManuais: db.prepare("DELETE FROM boletos WHERE status = 'manual' RETURNING id"),
     excluir: db.prepare("DELETE FROM boletos WHERE id = ? AND status NOT IN ('lancado', 'lancando')"),
     limparHistorico: db.prepare("DELETE FROM boletos WHERE status = 'lancado' RETURNING id"),
     excluirLancado: db.prepare("DELETE FROM boletos WHERE id = ? AND status = 'lancado' RETURNING id"),
@@ -191,11 +192,12 @@ export function abrirBanco(dir) {
     if (linha) {
       const ex = linhaParaObj(st.bolPorLinha.get(linha));
       // Ainda não lançado e com problema (ex.: mapeamento corrigido no config): atualiza com os dados novos.
-      if (ex && ex.status !== 'lancado' && ex.status !== 'lancando' && ex.problemas?.length)
+      if (ex && !['lancado', 'lancando', 'manual'].includes(ex.status) && ex.problemas?.length)
         return { boleto: atualizar({ ...novo, id: ex.id }), duplicado: null };
       if (ex) {
         const motivo = ex.status === 'lancado'
-          ? `Boleto já lançado${ex.lancadoEm ? ' em ' + dataCurta(ex.lancadoEm) : ''} (registro #${ex.id})`
+          ? `Boleto já lançado${ex.lancadoEm ? ' em ' + dataCurta(ex.lancadoEm) : ''}${ex.lancadoManual ? ' manualmente' : ''} (registro #${ex.id})`
+          : ex.status === 'manual' ? `Boleto já está na lista de lançamento manual (registro #${ex.id})`
           : `Boleto já está na lista para lançar (registro #${ex.id})`;
         const p = parametros(novo);
         st.dupInserir.run(b.link, ex.id, motivo, agora(), p.$busca, p.$dados);
@@ -318,6 +320,7 @@ export function abrirBanco(dir) {
     porId: id => linhaParaObj(st.bolPorId.get(Number(id))),
     registrarExtracao, atualizar, historico,
     limparPendentes: () => st.limparPendentes.all().map(r => r.id),
+    limparManuais: () => st.limparManuais.all().map(r => r.id),
     // Histórico: apaga boletos lançados (todos ou os escolhidos). Devolve os ids apagados.
     limparHistorico: () => st.limparHistorico.all().map(r => r.id),
     excluirLancados: transacao(ids => ids.flatMap(id => st.excluirLancado.all(Number(id)).map(r => r.id))),

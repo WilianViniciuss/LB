@@ -39,6 +39,7 @@
   <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></g></symbol>
   <symbol id="i-down" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></g></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></g></symbol>
+  <symbol id="i-hand" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></g></symbol>
   <symbol id="i-chev" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m9 6 6 6-6 6"/></symbol>
 </svg>
 
@@ -47,6 +48,7 @@
     <div class="brand"><img src="/logo.svg" alt="" width="52" height="52"><span>Boleto<b>Pro</b></span></div>
     <nav>
       <a href="#dashboard" data-view="dashboard" class="ativo"><svg><use href="#i-home"/></svg><span>Dashboard</span></a>
+      <a href="#manual" data-view="manual"><svg><use href="#i-hand"/></svg><span>Manuais</span><b id="nManual" class="nav-badge" hidden></b></a>
       <a href="#condominios" data-view="condominios"><svg><use href="#i-build"/></svg><span>Condomínios</span></a>
       <a href="#historico" data-view="historico"><svg><use href="#i-hist"/></svg><span>Histórico</span></a>
       <a href="#duplicidades" data-view="duplicidades"><svg><use href="#i-copy"/></svg><span>Duplicidades</span><b id="nDup" class="nav-badge" hidden></b></a>
@@ -155,6 +157,31 @@
       </div>
     </section>
 
+    <!-- ============ LANÇAMENTO MANUAL ============ -->
+    <section class="view" data-view="manual" hidden>
+      <div class="card">
+        <div class="card-h">
+          <span class="ico laranja"><svg><use href="#i-hand"/></svg></span>
+          <div><h2>Lançamento manual</h2><p>Boletos com <b>multa</b> ou <b>taxa de mudança</b>. Não são lançados automaticamente: abra o link, lance no Via Imob e marque como lançado.</p></div>
+          <div class="h-acoes">
+            <button id="bCopiarManual" class="btn-light" type="button"><svg><use href="#i-copy"/></svg>Copiar todos</button>
+            <button id="bCsvManual" class="btn-light" type="button"><svg><use href="#i-down"/></svg>Exportar CSV</button>
+            <button id="bLimparManual" class="btn-light" type="button"><svg><use href="#i-trash"/></svg>Limpar lista</button>
+          </div>
+        </div>
+        <div class="busca-barra compacta">
+          <label class="campo busca"><svg><use href="#i-search"/></svg><input id="mBusca" type="search" placeholder="Buscar condomínio, unidade, código…" aria-label="Buscar"></label>
+          <span id="mResultado" class="resultado"></span>
+        </div>
+        <div class="tabela-wrap alta">
+          <table class="tabela">
+            <thead><tr><th>Condomínio / Unidade</th><th>Cód.</th><th>Vencimento</th><th>Valor</th><th>Itens para lançar à mão</th><th>Link</th><th class="acoes-th"><span class="sr">Ações</span></th></tr></thead>
+            <tbody id="tbManual"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <!-- ============ CONDOMÍNIOS ============ -->
     <section class="view" data-view="condominios" hidden>
       <div class="card">
@@ -260,6 +287,7 @@
           <li><b>Navegador:</b> clique em <em>Abrir Navegador</em>, faça login no Via Imob e deixe a tela <b>Manutenção encargo</b> visível na aba ativa.</li>
           <li><b>Condomínios:</b> após a extração, cada link fica salvo no seu condomínio. Na tela <em>Condomínios</em> use <em>Extrair</em> ou <em>Usar links</em> para repetir no mês seguinte.</li>
           <li><b>Lançamento:</b> <em>Iniciar Lançamento</em> preenche o próximo boleto pronto. Ao concluir, ele é marcado como <b>lançado</b> e vai para o Histórico. Confira o total e <b>grave</b> no Via Imob. Se não gravar, use <em>Desfazer</em> no Histórico.</li>
+          <li><b>Lançamento manual:</b> boletos com multa ou taxa de mudança vão para a tela <em>Lançamento manual</em>, com o link e os dados. Lance no Via Imob e clique em <em>Marcar como lançado</em> (vai para o Histórico e fica protegido contra lançamento duplo). Os termos ficam em <code>lancamentoManual</code> no <code>config.json</code>.</li>
           <li><b>Avisos do Via Imob:</b> após o código identificador, o código de barras e cada ocorrência, o app confere se apareceu um aviso (ex.: código não encontrado, já lançado). Se aparecer no código ou nas barras, ele tira uma foto, fecha o aviso, marca o boleto como Erro e segue para o próximo. Se for numa ocorrência, ele fecha o aviso e para, para você conferir a tela.</li>
         </ol>
         <p class="mut">Tudo fica salvo no banco local <code>dados/boletopro.db</code>, com cópia de segurança diária em <code>dados/backup/</code>. Boleto repetido na extração (mesma linha digitável) é ignorado e registrado em <em>Duplicidades</em>; um boleto já lançado nunca é lançado de novo.</p>

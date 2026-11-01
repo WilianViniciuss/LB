@@ -37,6 +37,9 @@ export const criarMapeador = mapa => {
  */
 export async function extrair(proximo, cfg, onItem, ctrl) {
   const nomeDe = criarMapeador(cfg.mapaOcorrencias);
+  // Itens que exigem lançamento manual (ex.: multa, taxa de mudança): o boleto inteiro é separado.
+  const reManual = (cfg.lancamentoManual ?? ['multa', 'mudan']).map(r => new RegExp(r, 'i'));
+  const ehManual = item => reManual.some(r => r.test(item));
   const browser = await chromium.launch({ executablePath: cfg.chrome, headless: true });
   ctrl.browser = browser;
   const ctx = await browser.newContext({ ignoreHTTPSErrors: true, acceptDownloads: false, serviceWorkers: 'block' });
@@ -65,16 +68,19 @@ export async function extrair(proximo, cfg, onItem, ctrl) {
         d.mudanca.forEach(m => add(m.item, m.valor));
         d.outros.forEach(o => add(o.item, o.valor));
 
+        const itensManuais = ocorrencias.filter(o => ehManual(o.itemOriginal)).map(o => ({ item: o.itemOriginal, valor: o.valor }));
+        const manual = itensManuais.length > 0;
         const problemas = [];
         if (!d.conferencia.ok) problemas.push('Soma não fecha com recibo/documento/linha digitável');
         if (!d.codIdentificador) problemas.push('Código identificador não encontrado');
         if (!d.linhaDigitavel) problemas.push('Linha digitável não encontrada');
-        ocorrencias.filter(o => !o.nome).forEach(o => problemas.push(`Sem mapeamento: "${o.itemOriginal}" (config.json)`));
+        ocorrencias.filter(o => !o.nome && !ehManual(o.itemOriginal))
+          .forEach(o => problemas.push(`Sem mapeamento: "${o.itemOriginal}" (config.json)`));
 
         if (ctrl.parado) break;
         onItem(url, { link: url, itensRecibo: d.itensRecibo, condominio: d.condominio, unidade: d.unidade, vencimento: d.vencimento, codIdentificador: d.codIdentificador,
           linhaDigitavel: d.linhaDigitavel, desconto: d.desconto, valorTotal: d.conferencia.valorDocumento,
-          ocorrencias, conferencia: d.conferencia, problemas, status: 'pendente' });
+          ocorrencias, conferencia: d.conferencia, problemas, manual, itensManuais, status: manual ? 'manual' : 'pendente' });
       } catch (e) {
         if (ctrl.parado) break;
         const msg = primeiraLinha(e);

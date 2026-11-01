@@ -9,6 +9,7 @@
   "esperaMs": 1500,
   "lancamento": { "rapido": true, "verificarAvisos": true, "pularComErro": true },
   "diasCapturas": 90,
+  "lancamentoManual": ["multa", "mudan"],
   "mapaOcorrencias": [
     { "regex": "^fundo", "nome": "Fundo de Reserva DP-F" },
     { "regex": "^cham", "nome": "Chamada Extra DP - F" },

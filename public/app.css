@@ -128,6 +128,11 @@ textarea:focus { outline: none; border-color: var(--azul); box-shadow: 0 0 0 3px
 .tag.pendente { background: var(--card2); color: var(--mut); border: 1px solid var(--bd) }
 .tag.lancando { background: var(--amar-s); color: var(--amar) }
 .tag.lancado { background: var(--verde-s); color: var(--verde) }
+.tag.manual { background: var(--amar-s); color: var(--amar); display: inline-block; margin: 0 4px 4px 0 }
+.ico.laranja { background: var(--amar-s); color: var(--amar) }
+.chip-manual { background: var(--amar-s); color: var(--amar); border-color: transparent; text-decoration: none }
+.chip-manual b { color: var(--amar) }
+a.mini { display: inline-block; text-decoration: none; color: var(--tx) }
 .tag.erro { background: var(--verm-s); color: var(--verm) }
 .prob { color: var(--verm); font-size: 12.5px; margin-top: 4px }
 .mini { border: 1px solid var(--bd); background: var(--card); border-radius: 8px; padding: 5px 10px; font-size: 13px; font-weight: 600 }
