@@ -195,12 +195,18 @@
   };
 
   const acharBoleto = id => E.boletos.find(b => b.id === id) || H.itens.find(b => b.id === id);
-  async function lancar(id) {
+  async function lancar(id, semConfirmar = false) {
     const b = acharBoleto(id);
     if (!b) return;
-    if (!confirm(`Lançar ${b.codIdentificador} (${b.unidade || ''})?\nConfirme que a tela Manutenção encargo está na aba ativa.`)) return;
+    if (!semConfirmar && !confirm(`Lançar ${b.codIdentificador} (${b.unidade || ''})?\nConfirme que a tela Manutenção encargo está na aba ativa.`)) return;
     const r = await api('/api/lancar', { id });
     if (!r) return;
+    if (r.aguardando) {
+      for (const p of r.pulados || []) toast(`Boleto ${p.cod}: ${p.erro}`, 'erro');
+      toast(`Boleto ${r.aguardando.cod} preenchido. Confira o Total e clique em Gravar no painel.`, 'ok');
+      $('conf').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      return;
+    }
     for (const p of r.pulados || []) toast(`Boleto ${p.cod}: ${p.erro}`, 'erro');
     if (r.lancado) toast(`Boleto ${r.lancado.cod} lançado e movido para o Histórico.${r.pulados?.length ? ` (${plural(r.pulados.length, 'boleto pulado', 'boletos pulados')} por aviso do Via Imob)` : ''} Confira e grave no Via Imob.`, 'ok');
     else if (r.parou) toast('Lançamento parado: confira a tela do Via Imob antes de continuar.', 'erro');
@@ -611,7 +617,8 @@
       ['Porta', c.porta], ['Chrome', c.chrome], ['URL Via Imob', c.urlViaImob],
       ['Janela Via Imob', c.viewportViaImob ? `${c.viewportViaImob.width} × ${c.viewportViaImob.height}` : 'automática'],
       ['Concorrência', c.concorrenciaExtracao], ['Espera por página', c.esperaMs != null ? c.esperaMs + ' ms' : ''],
-      ['Lançamento', [(c.lancamento?.rapido !== false ? 'rápido (espera a resposta do Via Imob)' : 'tempos fixos'),
+      ['Lançamento', [(c.lancamento?.gravar !== false ? 'clica em Gravar após sua confirmação' : 'só preenche (grava à mão)'),
+        (c.lancamento?.rapido !== false ? 'rápido (espera a resposta do Via Imob)' : 'tempos fixos'),
         (c.lancamento?.verificarAvisos !== false ? 'verifica avisos' : 'sem verificação de avisos'),
         (c.lancamento?.pularComErro !== false ? 'com aviso: fecha e vai para o próximo' : 'com aviso: para')].join(' · ')],
       ['Lançamento manual (termos)', (c.lancamentoManual || []).join(', ') || '—'],
@@ -704,7 +711,10 @@
       if (/identificador/i.test(passo)) etapa = 0; else if (/barras/i.test(passo)) etapa = 1;
       else { const m = /Ocorrência (\d+) de/.exec(passo); if (m) etapa = 1 + Number(m[1]); else if (/Conclu/i.test(passo)) etapa = 99; }
     }
-    const chave = JSON.stringify([b.id, b.status, passo, c.modo, b.capturaErro, b.erroLancamento]);
+    const aguardando = E.aguardandoGravar === b.id;
+    $('confGravar').hidden = !aguardando;
+    $('confPasso').querySelector('.spin').hidden = aguardando;
+    const chave = JSON.stringify([b.id, b.status, passo, c.modo, b.capturaErro, b.erroLancamento, aguardando]);
     if (chave === chaveConf) return; // nada mudou: não redesenha
     chaveConf = chave;
 
@@ -749,6 +759,25 @@
     $('bVerErro').hidden = !b.capturaErro;
     $('bVerErro').onclick = () => abrirFotoErro(b);
   }
+
+  // ---------- Gravar no Via Imob (após conferir) ----------
+  async function confirmarGravacao(gravar) {
+    const id = E.aguardandoGravar; if (id == null) return;
+    $('bGravar').disabled = $('bManualGravar').disabled = true;
+    try {
+      const r = await api('/api/gravar', { id, gravar });
+      if (!r) return;
+      if (!r.ok) return toast(r.erro, 'erro');
+      if (!gravar) return toast('Marcado como lançado. Grave no Via Imob.', 'ok');
+      toast('Gravado no Via Imob e movido para o Histórico.' + (r.janelas?.length ? ` Abriu: ${r.janelas.join(', ')} — confira.` : ''), r.janelas?.length ? 'erro' : 'ok');
+      // Segue para o próximo boleto pronto.
+      await tick();
+      const prox = automaticos().find(x => x.status === 'pendente' && !temProblema(x));
+      if (prox && podeLancar()) lancar(prox.id, true);
+    } finally { $('bGravar').disabled = $('bManualGravar').disabled = false; }
+  }
+  $('bGravar').onclick = () => confirmarGravacao(true);
+  $('bManualGravar').onclick = () => confirmarGravacao(false);
 
   // ---------- Janela: todos os dados extraídos / foto da tela de erro ----------
   let urlFoto = null;

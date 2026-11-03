@@ -48,6 +48,7 @@ const estado = {
   via: { aberto: false },
   lancando: null, // id do boleto em lançamento
   passoLancamento: null,
+  aguardandoGravar: null, // id do boleto preenchido esperando a confirmação para clicar em Gravar
   duplicidades: 0,
   // Revisões: a interface só recarrega Histórico/Condomínios/Duplicidades quando a respectiva muda.
   rev: { hist: 0, cond: 0, dup: 0 }
@@ -102,6 +103,7 @@ const erro = (msg, code) => Object.assign(new Error(msg), { code });
 let encerrando = false;
 async function encerrar() {
   if (encerrando) return; encerrando = true;
+  setTimeout(() => process.exit(0), 5000).unref(); // nunca fica preso ao fechar
   try { await salvarSessao(); await viaCtx?.close().catch(() => {}); banco.fechar(); } finally { process.exit(0); }
 }
 for (const sinal of ['SIGINT', 'SIGTERM']) process.on(sinal, encerrar);
@@ -195,6 +197,34 @@ async function abaAtiva() {
   return pages[pages.length - 1];
 }
 
+const marcarLancado = (b, extra = {}) => {
+  Object.assign(b, { status: 'lancado', lancadoEm: new Date().toISOString() }, extra);
+  estado.boletos = estado.boletos.filter(x => x.id !== b.id); // sai da lista → Histórico
+  tocar('hist', 'cond');
+};
+
+// Clica em Gravar (canto inferior direito da tela do Via Imob) e observa por 3 s se abriu a janela "Erro".
+const SCRIPT_GRAVAR = async () => {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const titulo = w => (w.querySelector('.title')?.textContent || '').replace(/\s+/g, ' ').trim();
+  const ERRO = /^(erro|aviso|aten[cç][aã]o)\b/i;
+  const antes = new Set(document.querySelectorAll('.dwmwindow'));
+  const x = innerWidth - 237, y = innerHeight - 18, el = document.elementFromPoint(x, y);
+  if (!el) return { erro: 'não achei o botão Gravar na posição esperada (a janela do Via Imob está maximizada?)' };
+  const o = { bubbles: true, cancelable: true, clientX: x, clientY: y, screenX: x, screenY: y, button: 0, buttons: 1, view: window };
+  el.dispatchEvent(new PointerEvent('pointerdown', o)); el.dispatchEvent(new MouseEvent('mousedown', o));
+  o.buttons = 0;
+  el.dispatchEvent(new PointerEvent('pointerup', o)); el.dispatchEvent(new MouseEvent('mouseup', o)); el.dispatchEvent(new MouseEvent('click', o));
+  const t0 = Date.now();
+  while (Date.now() - t0 < 3000) {
+    await sleep(150);
+    const erro = [...document.querySelectorAll('.dwmwindow')].find(w => ERRO.test(titulo(w)));
+    if (erro) return { erro: `o Via Imob mostrou a janela "${titulo(erro)}" ao gravar` };
+  }
+  const novas = [...document.querySelectorAll('.dwmwindow')].filter(w => !antes.has(w)).map(titulo).filter(Boolean);
+  return { janelas: novas };
+};
+
 // Lança um boleto da lista. Sucesso → marcado como lançado e movido para o Histórico.
 async function lancar(id) {
   if (estado.lancando !== null) throw erro('Já existe um lançamento em andamento', 409);
@@ -231,10 +261,11 @@ async function lancar(id) {
     salvarBoleto(b);
     const opc = cfg.lancamento || {};
     await page.evaluate(gerarScript(b, { rapido: opc.rapido !== false, verificar: opc.verificarAvisos !== false }));
-    b.status = 'lancado';
-    b.lancadoEm = new Date().toISOString();
-    estado.boletos = estado.boletos.filter(x => x.id !== b.id); // sai da lista → Histórico
-    tocar('hist', 'cond');
+    if (opc.gravar !== false) {
+      // Preenchido: espera a confirmação no app para clicar em Gravar (o lançamento continua "em andamento").
+      estado.aguardandoGravar = b.id;
+      estado.passoLancamento = 'Preenchido. Confira o Total no Via Imob e confirme a gravação abaixo.';
+    } else marcarLancado(b);
   } catch (e) {
     b.status = 'erro';
     // Formato do script: AVISO|etapa|mensagem|fechou(0/1)|pode pular(0/1)
@@ -255,7 +286,8 @@ async function lancar(id) {
   } finally {
     page?.off('console', aoLog);
     page?.off('dialog', aoDialogo);
-    estado.lancando = null; estado.passoLancamento = null; salvarBoleto(b);
+    if (estado.aguardandoGravar !== b.id) { estado.lancando = null; estado.passoLancamento = null; }
+    salvarBoleto(b);
   }
   return { b, pular };
 }
@@ -423,6 +455,7 @@ const rotas = {
     const pularLigado = cfg.lancamento?.pularComErro !== false;
     for (let atual = id; ;) {
       const { b, pular } = await lancar(atual);
+      if (estado.aguardandoGravar === b.id) return { ok: true, aguardando: { id: b.id, cod: b.codIdentificador }, pulados };
       if (b.status === 'lancado') return { ok: true, lancado: { id: b.id, cod: b.codIdentificador }, pulados };
       pulados.push({ id: b.id, cod: b.codIdentificador, erro: b.erroLancamento });
       const prox = pular && pularLigado && estado.boletos.find(x => x.status === 'pendente' && !x.problemas?.length);
@@ -430,6 +463,31 @@ const rotas = {
       estado.passoLancamento = `Aviso no boleto ${b.codIdentificador} — indo para o próximo…`; mudou(false);
       atual = prox.id;
     }
+  },
+  // Confirmação do Gravar: gravar=true clica em Gravar no Via Imob; false = "eu gravo manualmente".
+  'POST /api/gravar': async ({ id, gravar }) => {
+    if (!idValido(id) || estado.aguardandoGravar !== id) throw erro('Nenhum boleto aguardando gravação', 409);
+    const b = boletoDoLote(id);
+    const fim = () => { estado.aguardandoGravar = null; estado.lancando = null; estado.passoLancamento = null; };
+    if (!gravar) { marcarLancado(b); fim(); salvarBoleto(b); return { ok: true, gravado: false }; }
+    estado.passoLancamento = 'Clicando em Gravar no Via Imob…'; mudou(false);
+    let page = null, r;
+    const aoDialogo = async d => { r = { erro: `caixa de mensagem ao gravar: ${d.message()}` }; await d.dismiss().catch(() => {}); };
+    try {
+      page = await abaAtiva();
+      page.on('dialog', aoDialogo);
+      r = (await page.evaluate(SCRIPT_GRAVAR)) || r;
+    } catch (e) { r = { erro: String(e.message).replace(/^page\.evaluate:\s*(Error:\s*)?/, '').split('\n')[0] }; }
+    finally { page?.off('dialog', aoDialogo); }
+    if (r?.erro) {
+      b.status = 'erro'; b.erroLancamento = 'Ao gravar: ' + r.erro;
+      try { fs.writeFileSync(arqCaptura(b.id), await page.screenshot({ type: 'jpeg', quality: 75, timeout: 5000 })); b.capturaErro = true; } catch {}
+      fim(); salvarBoleto(b);
+      return { ok: false, erro: b.erroLancamento };
+    }
+    marcarLancado(b, { gravadoPeloApp: true, ...(r?.janelas?.length && { avisoGravar: `Após gravar abriu: ${r.janelas.join(', ')}` }) });
+    fim(); salvarBoleto(b);
+    return { ok: true, gravado: true, janelas: r?.janelas || [] };
   },
   'POST /api/boletos/excluir': async ({ id }) => {
     if (!idValido(id)) throw erro('Boleto inválido', 400);
