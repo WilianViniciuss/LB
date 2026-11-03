@@ -10,6 +10,8 @@ const pagina = fs.readFileSync(path.join(raiz, 'src', 'pagina.js'), 'utf8');
 const modelo = fs.readFileSync(path.join(raiz, 'src', 'lancamento.modelo.js'), 'utf8');
 
 const MAX_LINKS = 1000;
+// Itens que exigem lançamento manual: multa, taxa de mudança, caixa d'água (limpeza etc.) e extintor.
+export const MANUAL_PADRAO = ['multa', 'mudan', 'caixa\\s*d\\W{0,2}\\s*[aá]gua', 'cx\\.?\\s*d\\W{0,2}\\s*[aá]gua', 'extint'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const primeiraLinha = e => String(e?.message || e).split('\n')[0].slice(0, 300);
 
@@ -38,7 +40,7 @@ export const criarMapeador = mapa => {
 export async function extrair(proximo, cfg, onItem, ctrl) {
   const nomeDe = criarMapeador(cfg.mapaOcorrencias);
   // Itens que exigem lançamento manual (ex.: multa, taxa de mudança): o boleto inteiro é separado.
-  const reManual = (cfg.lancamentoManual ?? ['multa', 'mudan']).map(r => new RegExp(r, 'i'));
+  const reManual = (cfg.lancamentoManual ?? MANUAL_PADRAO).map(r => new RegExp(r, 'i'));
   const ehManual = item => reManual.some(r => r.test(item));
   const browser = await chromium.launch({ executablePath: cfg.chrome, headless: true });
   ctrl.browser = browser;

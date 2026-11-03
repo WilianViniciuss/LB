@@ -72,7 +72,7 @@
     dashboard: ['Dashboard', 'Gerencie a extração de dados e o lançamento dos boletos de forma simples e eficiente.'],
     historico: ['Histórico', 'Boletos já lançados no Via Imob.'],
     condominios: ['Condomínios', 'Links vinculados a cada condomínio, prontos para reutilizar.'],
-    manual: ['Lançamento manual', 'Boletos com multa ou taxa de mudança, para lançar à mão.'],
+    manual: ['Lançamento manual', 'Boletos com multa, taxa de mudança, caixa d\'água ou extintor, para lançar à mão.'],
     duplicidades: ['Duplicidades', 'Boletos ignorados na extração por já existirem no banco.'],
     configuracoes: ['Configurações', 'Parâmetros atuais do sistema.'],
     ajuda: ['Ajuda', 'Passo a passo para usar o sistema.']
@@ -534,7 +534,7 @@
         <td class="acoes"><button type="button" class="mini" data-m="dados" data-id="${b.id}">Ver dados</button>
           <button type="button" class="mini" data-m="lancado" data-id="${b.id}">Marcar como lançado</button>
           <button type="button" class="mini" data-m="excluir" data-id="${b.id}">Excluir</button></td></tr>`;
-    }).join('') || linhaVazia(7, total ? 'Nenhum boleto corresponde à busca.' : 'Nenhum boleto para lançamento manual.', total ? '' : 'Boletos com multa ou taxa de mudança aparecem aqui após a extração.'));
+    }).join('') || linhaVazia(7, total ? 'Nenhum boleto corresponde à busca.' : 'Nenhum boleto para lançamento manual.', total ? '' : 'Boletos com multa, taxa de mudança, caixa d\'água ou extintor aparecem aqui após a extração.'));
   }
   async function copiar(texto, msg) {
     try { await navigator.clipboard.writeText(texto); toast(msg, 'ok'); }
@@ -621,7 +621,7 @@
         (c.lancamento?.rapido !== false ? 'rápido (espera a resposta do Via Imob)' : 'tempos fixos'),
         (c.lancamento?.verificarAvisos !== false ? 'verifica avisos' : 'sem verificação de avisos'),
         (c.lancamento?.pularComErro !== false ? 'com aviso: fecha e vai para o próximo' : 'com aviso: para')].join(' · ')],
-      ['Lançamento manual (termos)', (c.lancamentoManual || []).join(', ') || '—'],
+      ['Lançamento manual (termos)', (c.lancamentoManual || []).map(t => t.replace(/\\s\*|\\W\{0,2\}|\\\.\?/g, ' ').replace(/\[aá\]/g, 'á').replace(/\s+/g, ' ').trim()).join(' · ') || '—'],
       ['Foto da tela de erro', `guardada por ${c.diasCapturas} dias`],
       ['Banco de dados', c.banco]
     ];

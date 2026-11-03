@@ -169,7 +169,7 @@
       <div class="card">
         <div class="card-h">
           <span class="ico laranja"><svg><use href="#i-hand"/></svg></span>
-          <div><h2>Lançamento manual</h2><p>Boletos com <b>multa</b> ou <b>taxa de mudança</b>. Não são lançados automaticamente: abra o link, lance no Via Imob e marque como lançado.</p></div>
+          <div><h2>Lançamento manual</h2><p>Boletos com <b>multa</b>, <b>taxa de mudança</b>, <b>caixa d'água</b> ou <b>extintor</b>. Não são lançados automaticamente: abra o link, lance no Via Imob e marque como lançado.</p></div>
           <div class="h-acoes">
             <button id="bCopiarManual" class="btn-light" type="button"><svg><use href="#i-copy"/></svg>Copiar todos</button>
             <button id="bCsvManual" class="btn-light" type="button"><svg><use href="#i-down"/></svg>Exportar CSV</button>
@@ -294,7 +294,7 @@
           <li><b>Navegador:</b> clique em <em>Abrir Navegador</em>, faça login no Via Imob e deixe a tela <b>Manutenção encargo</b> visível na aba ativa.</li>
           <li><b>Condomínios:</b> após a extração, cada link fica salvo no seu condomínio. Na tela <em>Condomínios</em> use <em>Extrair</em> ou <em>Usar links</em> para repetir no mês seguinte.</li>
           <li><b>Lançamento:</b> <em>Iniciar Lançamento</em> preenche o próximo boleto pronto e para. Confira o <b>Total</b> no Via Imob e, no painel de Conferência, clique em <em>Gravar no Via Imob</em> (o app clica em Gravar e já preenche o próximo) ou em <em>Eu gravo manualmente</em>. O boleto vai para o Histórico; se precisar, use <em>Desfazer</em>.</li>
-          <li><b>Lançamento manual:</b> boletos com multa ou taxa de mudança vão para a tela <em>Lançamento manual</em>, com o link e os dados. Lance no Via Imob e clique em <em>Marcar como lançado</em> (vai para o Histórico e fica protegido contra lançamento duplo). Os termos ficam em <code>lancamentoManual</code> no <code>config.json</code>.</li>
+          <li><b>Lançamento manual:</b> boletos com multa, taxa de mudança, caixa d'água (limpeza etc.) ou extintor vão para a tela <em>Lançamento manual</em>, com o link e os dados. Lance no Via Imob e clique em <em>Marcar como lançado</em> (vai para o Histórico e fica protegido contra lançamento duplo). Os termos ficam em <code>lancamentoManual</code> no <code>config.json</code>.</li>
           <li><b>Avisos do Via Imob:</b> após o código identificador, o código de barras e cada ocorrência, o app confere se o Via Imob abriu a janela <b>Erro</b> (ex.: código não encontrado, já lançado). Se aparecer no código ou nas barras, ele tira uma foto, fecha o aviso, marca o boleto como Erro e segue para o próximo. Se for numa ocorrência, ele fecha o aviso e para, para você conferir a tela.</li>
         </ol>
         <p class="mut">Tudo fica salvo no banco local <code>dados/boletopro.db</code>, com cópia de segurança diária em <code>dados/backup/</code>. Boleto repetido na extração (mesma linha digitável) é ignorado e registrado em <em>Duplicidades</em>; um boleto já lançado nunca é lançado de novo.</p>

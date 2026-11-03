@@ -7,7 +7,7 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
-import { extrair, separarLinks, gerarScript } from './extrator.js';
+import { extrair, separarLinks, gerarScript, MANUAL_PADRAO } from './extrator.js';
 import { abrirBanco } from './banco.js';
 
 const raiz = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -41,7 +41,7 @@ const estado = {
   app: { versao: versaoApp },
   config: { chrome: cfg.chrome, porta, urlViaImob: cfg.urlViaImob, viewportViaImob: cfg.viewportViaImob,
     concorrenciaExtracao: cfg.concorrenciaExtracao, esperaMs: cfg.esperaMs, mapaOcorrencias: cfg.mapaOcorrencias,
-    lancamento: cfg.lancamento, diasCapturas: cfg.diasCapturas || 90, lancamentoManual: cfg.lancamentoManual ?? ['multa', 'mudan'] },
+    lancamento: cfg.lancamento, diasCapturas: cfg.diasCapturas || 90, lancamentoManual: cfg.lancamentoManual ?? MANUAL_PADRAO },
   atualizadoEm: new Date().toISOString(),
   extracao: { rodando: false, pausado: false, total: 0, feitos: 0, duplicados: 0, fila: 0, erro: null },
   boletos: [],
@@ -230,7 +230,7 @@ async function lancar(id) {
   if (estado.lancando !== null) throw erro('Já existe um lançamento em andamento', 409);
   const b = boletoDoLote(id);
   if (!b) throw erro('Boleto não está na lista para lançar (já lançado ou excluído)', 409);
-  if (b.status === 'manual') throw erro('Este boleto é de lançamento manual (tem multa ou taxa de mudança)', 409);
+  if (b.status === 'manual') throw erro('Este boleto é de lançamento manual (tem multa, mudança, caixa d\'água ou extintor)', 409);
   if (b.problemas?.length) throw erro('Boleto com problemas: ' + b.problemas.join('; '), 400);
   // Trava contra lançamento duplo: mesma linha digitável já lançada antes.
   const dup = banco.jaLancado(b.linhaDigitavel, b.id);
